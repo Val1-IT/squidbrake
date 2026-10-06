@@ -41,7 +41,7 @@ def test_systemd_user_unit_restarts_and_starts_at_boot(fake_home):
     service._systemd_install([])
     unit = (home / ".config/systemd/user/squidbrake.service").read_text()
     assert "Restart=always" in unit and "WantedBy=default.target" in unit
-    assert f'"{service.SERVER}" "run" "--no-browser"' in unit
+    assert f'{service._sd_quote(str(service.SERVER))} "run" "--no-browser"' in unit   # quoted, so \ doubles on Windows
     assert ("systemctl", "--user", "enable", "squidbrake.service") in calls
     assert any(c[:2] == ("loginctl", "enable-linger") for c in calls)
     assert service._systemd_remove() and not service._systemd_installed()
