@@ -420,6 +420,8 @@ def _cli(sub: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] and argv[0] in ("-h", "--help"):     # before the flags-mean-start rule below
+        argv = ["help"]
     cmd, rest = (argv[0], argv[1:]) if argv and not argv[0].startswith("-") else ("start", argv)
     if cmd in ("-h", "--help", "help"):
         print(__doc__)

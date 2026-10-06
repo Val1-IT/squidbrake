@@ -156,3 +156,8 @@ def test_stop_remembers_no(mac, monkeypatch):
 def test_start_scripts_go_through_the_service():
     assert 'service.py start "$@"' in (ROOT / "start.sh").read_text(encoding="utf-8")
     assert "service.py start %*" in (ROOT / "start.bat").read_text(encoding="utf-8")
+
+
+def test_service_help_is_the_service_help(capsys):
+    assert service.main(["--help"]) == 0 and service.main(["-h"]) == 0
+    assert "start --background" in capsys.readouterr().out
