@@ -82,7 +82,7 @@ manager approves or rejects them. If the editor asks whether to allow tasks that
 ```bash
 pipx install squidbrake           # or: pip install squidbrake
 squidbrake connect all            # every AI agent on this computer now goes through it
-squidbrake                        # start it: opens the dashboard
+squidbrake                        # start it: opens the dashboard (asks once about running in the background)
 ```
 
 `connect all` finds the agents you have (Claude Code, Cursor, Codex, Gemini CLI, VS Code Copilot, Antigravity) and
@@ -113,6 +113,14 @@ Or with Docker: `docker run -d -p 8080:8080 -v squidbrake-data:/app/data --name 
 The first start installs everything, prints an **admin** key (for the dashboard) and an **agent** key
 (shown once, so save them), and opens `http://localhost:8080/dashboard`. No configuration needed; every
 setting in `.env.example` is optional.
+
+The first start in a terminal also asks once whether to keep Squidbrake running in the background, so your agents
+(which fail closed) are never locked out because it's down. Enter means no; nothing is installed without a yes,
+and scripts or CI are never asked. A yes adds a login item: a LaunchAgent on macOS, a systemd user service on
+Linux, a `Run` registry value on Windows (some endpoint security tools flag these, so check with IT first).
+`squidbrake start --background` installs it without asking (or set `SQUIDBRAKE_BACKGROUND=1` for unattended
+installs), `squidbrake service status` checks it, `squidbrake service stop` takes it out, and `squidbrake run`
+(or `./start.sh --foreground`) always runs in the window. Docker restarts by itself already.
 
 Keys: `python server.py add-key NAME [--approver]`, `python server.py remove-key NAME`, `python server.py keys`.
 Changes apply immediately, no restart needed. (Inside Docker, prefix with `docker compose exec gateway`.)
