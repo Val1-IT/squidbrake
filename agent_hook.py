@@ -107,12 +107,11 @@ def cursor_tool(name: str, args, cwd) -> tuple[str, dict] | None:
     if name == "Delete" and isinstance(path, str):
         # deleting a file is the same as `rm` it: the command checks know which deletes are everyday work (a log, a
         # temp file), and those only count inside the project, so a path in it is made relative
-        if cwd and os.path.isabs(path):
-            try:
-                rel = os.path.relpath(path, cwd)
-                path = rel if not rel.startswith("..") else path
-            except ValueError:          # another drive on Windows
-                pass
+        # compared as text: os.path.isabs disagrees across OSes and Python versions on paths like /w/x (Windows, 3.13)
+        root = str(cwd or "").replace("\\", "/").rstrip("/") + "/"
+        posix = path.replace("\\", "/")
+        if cwd and posix.lower().startswith(root.lower()):
+            path = posix[len(root):] or path
         return "Bash", {"command": f"rm -- {shlex.quote(path)}", **({"cwd": cwd} if cwd else {})}
     if name in ("Shell", "Read", "Grep") or name.startswith("MCP:"):
         return None                     # covered by beforeShellExecution / beforeReadFile / beforeMCPExecution
