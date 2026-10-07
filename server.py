@@ -1368,7 +1368,7 @@ def settings() -> dict:
                 "ntfy_topic": os.getenv("NTFY_TOPIC", ""), "ntfy_server": os.getenv("NTFY_SERVER", "https://ntfy.sh"),
                 "notify_as": os.getenv("NOTIFY_APPROVER", "admin"), "weekly_digest": True,
                 "second_person": os.getenv("SECOND_PERSON_APPROVAL", "").lower() in ("1", "true", "yes"),
-                "customers": []}
+                "customers": [], "slack_signing_secret": os.getenv("SLACK_SIGNING_SECRET", "")}
     return {**defaults, **state_get("settings", {})}
 
 
@@ -1445,6 +1445,23 @@ def slack_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def slack_blocks(title: str, body: str, token: str, link: str, expires: str) -> list[dict]:
+    """The approval as a Slack message with Approve / Reject buttons (Squidbrake's Slack app sends the click to
+    /v1/slack/actions). Each button carries the same signed, one-event token as the one-tap link."""
+    text = f"*{slack_escape(title)}*\n{slack_escape(body)}"
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}},
+        {"type": "actions", "block_id": "squidbrake", "elements": [
+            {"type": "button", "action_id": "approve", "style": "primary", "value": token,
+             "text": {"type": "plain_text", "text": "Approve"}},
+            {"type": "button", "action_id": "reject", "style": "danger", "value": token,
+             "text": {"type": "plain_text", "text": "Reject"}},
+            {"type": "button", "action_id": "open", "url": link, "text": {"type": "plain_text", "text": "Details"}},
+        ]},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Expires {slack_escape(expires or '')}"}]},
+    ]
+
+
 def _truncate_discord(s: str, limit: int) -> str:
     if len(s) <= limit:
         return s
@@ -1492,6 +1509,9 @@ def notify_approval_needed(row: dict) -> None:
                         "event": {k: row[k] for k in ("id", "name", "kind", "source", "session_id", "client",
                                                       "rule_id", "reason", "approval_deadline")},
                     }
+                    if cfg.get("slack_signing_secret"):
+                        # Squidbrake's Slack app (Settings): decide right in the message, no page to open
+                        payload["blocks"] = slack_blocks(title, body, token, link, expires)
                 httpx.post(cfg["slack_webhook"], timeout=10, json=payload).raise_for_status()
             except Exception:
                 log.exception("Slack/webhook notification failed for event %s", row["id"])
@@ -1939,6 +1959,7 @@ class SettingsIn(BaseModel):
     weekly_digest: bool | None = None
     second_person: bool | None = None
     customers: list[str] | None = Field(None, max_length=5000)   # names to keep out of PRs, issues, posts (data_checks)
+    slack_signing_secret: str | None = Field(None, max_length=200)  # Squidbrake's Slack app: Approve / Reject buttons
 
 
 @app.get("/v1/settings")
@@ -2058,6 +2079,68 @@ def agent_decisions(days: int = Query(7, ge=1, le=90), limit: int = Query(20, ge
         "outcome": ("approved" if r.decision == "allow" else "rejected") if r.decided_by != "timeout" else f"timed out ({r.decision})",
         "decided_by": r.decided_by, "note": r.decision_note, "when": r.decided_at, "rule": r.reason,
     } for r in rows]}
+
+
+@app.post("/v1/slack/actions")
+async def slack_actions(request: Request):
+    """Approve / Reject clicked in a Slack message (Squidbrake's Slack app, Settings). Slack signs each request with
+    the app's signing secret; the button carries the event's signed token, so a click decides that one event only."""
+    secret = settings().get("slack_signing_secret") or ""
+    if not secret:
+        raise HTTPException(404, "Slack buttons aren't set up on this gateway")
+    raw = await request.body()
+    ts, sig = request.headers.get("x-slack-request-timestamp", ""), request.headers.get("x-slack-signature", "")
+    if not ts.isdigit() or abs(time.time() - int(ts)) > 300:
+        raise HTTPException(401, "stale or missing Slack timestamp")
+    good = "v0=" + hmac.new(secret.encode(), b"v0:" + ts.encode() + b":" + raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, good):
+        raise HTTPException(401, "bad Slack signature")
+    from urllib.parse import parse_qs
+    try:
+        payload = json.loads(parse_qs(raw.decode())["payload"][0])
+        action = payload["actions"][0]
+    except (KeyError, IndexError, ValueError):
+        raise HTTPException(400, "not a Slack button click")
+    if action.get("action_id") not in ("approve", "reject"):
+        return Response(status_code=200)                    # "Details" just opens the page
+    event_id, approver = read_link_token(str(action.get("value", "")))
+    user = payload.get("user") or {}
+    clicker = re.sub(r"[^\w.@-]", "", str(user.get("username") or user.get("name") or user.get("id") or "someone"))[:60]
+    outcome = "allow" if action["action_id"] == "approve" else "deny"
+    try:
+        d = await run_in_threadpool(decide, event_id, outcome, approver, f"in Slack by @{clicker}", "slack")
+        done = f"{':white_check_mark: Approved' if d.decision == 'allow' else ':no_entry: Rejected'} by @{clicker} in Slack"
+    except HTTPException as e:
+        done = f":information_source: {e.detail}"
+    url = str(payload.get("response_url") or "")
+    if url.startswith("https://hooks.slack.com/"):          # replace the buttons with what happened
+        original = (payload.get("message") or {}).get("blocks") or []
+        blocks = [b for b in original if b.get("type") == "section"][:1] + [
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": done}]}]
+
+        async def tell():
+            try:
+                await request.app.state.http.post(url, json={"replace_original": True, "text": done, "blocks": blocks},
+                                                   timeout=10)
+            except httpx.HTTPError:
+                log.warning("couldn't update the Slack message for %s", event_id)
+        asyncio.create_task(tell())
+    return Response(status_code=200)
+
+
+def slack_manifest(public_url: str) -> dict:
+    """A Slack app that posts approvals with buttons: create it from this manifest, install it to a channel."""
+    return {"display_information": {"name": "Squidbrake", "description": "Approve or reject what your AI agents want to do"},
+            "features": {"bot_user": {"display_name": "Squidbrake", "always_online": False}},
+            "oauth_config": {"scopes": {"bot": ["incoming-webhook"]}},
+            "settings": {"interactivity": {"is_enabled": True, "request_url": f"{public_url.rstrip('/')}/v1/slack/actions"},
+                         "org_deploy_enabled": False, "socket_mode_enabled": False, "token_rotation_enabled": False}}
+
+
+@app.get("/v1/slack/manifest")
+def get_slack_manifest(request: Request, _: str = Depends(admin)):
+    base = settings().get("public_url") or str(request.base_url)
+    return {"manifest": slack_manifest(base), "public": bool(settings().get("public_url"))}
 
 
 @app.post("/v1/a/{token}/{outcome}", response_model=Decision)

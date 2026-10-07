@@ -178,6 +178,10 @@ header .spacer { flex: 1; }
 .clock { font-size: 12.5px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .clock.soon { color: var(--critical); font-weight: 600; }
 .hint { font-size: 12px; color: var(--text-muted); }
+#slackSetup summary { cursor: pointer; font-weight: 500; }
+#slackSetup .steps { margin: 10px 0 12px; padding-left: 18px; display: grid; gap: 6px; }
+#slackSetup .manifest { max-height: 180px; overflow: auto; margin: 6px 0; padding: 10px; font-size: 11px; border-radius: 6px;
+  background: var(--bg-subtle, rgba(127,127,127,.08)); white-space: pre; }
 @media (max-width: 640px) {
   .aq li { grid-template-columns: minmax(0, 1fr); }
   .aq .side { align-items: stretch; }
@@ -688,6 +692,18 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
         <label class="full">Slack or Discord incoming webhook
           <span class="hint">Paste a Slack or Discord webhook URL. Discord formatting is detected automatically. Leave empty to turn off.</span>
           <input name="slack_webhook" placeholder="Webhook URL"></label>
+        <details class="full" id="slackSetup">
+          <summary>Approve and Reject right in Slack (buttons)</summary>
+          <ol class="hint steps">
+            <li>Set the public address above first: Slack sends each click there.</li>
+            <li><a href="https://api.slack.com/apps?new_app=1" target="_blank" rel="noopener">Create a Slack app</a>
+              → From a manifest → pick your workspace → paste this:
+              <pre id="slackManifest" class="manifest"></pre> <button type="button" class="btn" id="copyManifest">Copy manifest</button></li>
+            <li>Install it to your workspace and pick the channel for approvals. Paste the webhook URL it gives you above.</li>
+            <li>From the app's Basic Information page, copy the Signing Secret here:</li>
+          </ol>
+          <label>Slack app signing secret <input name="slack_signing_secret" type="password" autocomplete="off" placeholder="from Basic Information"></label>
+        </details>
         <label>One-tap links approve as
           <select name="notify_as" id="notifyAs"></select>
           <span class="hint">Whoever can see the notification can use its link, so pick the person who owns that phone / channel.</span></label>
@@ -2192,7 +2208,9 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
   const sForm = $("#settingsForm");
   async function loadSettings() {
     const [s, team] = await Promise.all([api("/v1/settings"), api("/v1/team")]);
-    for (const k of ["public_url", "ntfy_topic", "slack_webhook"]) sForm[k].value = s[k] || "";
+    for (const k of ["public_url", "ntfy_topic", "slack_webhook", "slack_signing_secret"]) sForm[k].value = s[k] || "";
+    if (s.slack_signing_secret) $("#slackSetup").open = true;
+    api("/v1/slack/manifest").then((m) => { $("#slackManifest").textContent = JSON.stringify(m.manifest, null, 2); }).catch(() => {});
     sForm.weekly_digest.checked = !!s.weekly_digest;
     sForm.second_person.checked = !!s.second_person;
     const approvers = team.members.filter((m) => m.approver).map((m) => m.name);
@@ -2257,6 +2275,7 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
     } catch (err) { $("#mcpMsg").textContent = err.message; }
   });
   $("#useOrigin").addEventListener("click", () => { sForm.public_url.value = location.origin; });
+  $("#copyManifest").addEventListener("click", (e) => copy($("#slackManifest").textContent, e.target));
   $("#genTopic").addEventListener("click", () => {
     const b = new Uint8Array(9); crypto.getRandomValues(b);
     sForm.ntfy_topic.value = "gw-" + Array.from(b, (x) => x.toString(36).padStart(2, "0")).join("").slice(0, 16);
@@ -2265,7 +2284,8 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
     ev.preventDefault();
     try {
       await apiSend("PUT", "/v1/settings", { public_url: sForm.public_url.value.trim(), ntfy_topic: sForm.ntfy_topic.value.trim(),
-        slack_webhook: sForm.slack_webhook.value.trim(), notify_as: sForm.notify_as.value || null, weekly_digest: sForm.weekly_digest.checked,
+        slack_webhook: sForm.slack_webhook.value.trim(), slack_signing_secret: sForm.slack_signing_secret.value.trim(),
+        notify_as: sForm.notify_as.value || null, weekly_digest: sForm.weekly_digest.checked,
         second_person: sForm.second_person.checked });
       $("#settingsMsg").textContent = "Saved ✓"; setTimeout(() => ($("#settingsMsg").textContent = ""), 3000);
     } catch (err) { $("#settingsMsg").textContent = err.message; }
