@@ -18,7 +18,8 @@ The `squidbrake` command (installed with pip):
   squidbrake shell-guard check "LINE"  exit code 0 run, 1 block, 2 ask (used by the snippet above)
   squidbrake undo [ID]               list, or put back, what an agent deleted or overwrote
   squidbrake proxy --app NAME -- CMD an MCP server that checks every call to the app's MCP server CMD first
-                                     (same as: python gateway_proxy.py ...)
+                                     (same as: python gateway_proxy.py ...); add --serve HOST:PORT --token T to
+                                     serve it by URL, for ChatGPT / claude.ai connectors, Devin, n8n, cloud agents
   squidbrake pilot join CODE --server URL   share usage counts with a pilot (asks first; see pilot.py)
   squidbrake telemetry [status|on|off]      anonymous usage stats (asked once; see telemetry.py)
   squidbrake register EMAIL          tell the Squidbrake team who you are (optional, asks first)

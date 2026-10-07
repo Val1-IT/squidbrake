@@ -139,8 +139,8 @@ from a clone, use the `.venv` Python that `start.bat` / `start.sh` created):
 | Agent | What's checked | One at a time |
 |---|---|---|
 | Claude Code | every tool call (Bash, PowerShell, edits, reads, web, MCP) | `connect claude-code` |
-| Cursor | terminal commands and file reads, plus its MCP servers | `connect agents --agent cursor`, `connect guard --agent cursor` |
-| Codex | shell commands and edits. **Approve the hook once in Codex with `/hooks`**: until then Codex skips it | `connect agents --agent codex` |
+| Cursor | terminal commands, file reads, file edits and deletes (Cursor's `preToolUse`, in recent versions), and MCP tools | `connect agents --agent cursor`, `connect guard --agent cursor` |
+| Codex | shell commands, edits and MCP tools. **Approve the hook once in Codex with `/hooks`**: until then Codex skips it | `connect agents --agent codex` |
 | Gemini CLI | shell commands, reads, writes and edits, plus its MCP servers | `connect agents --agent gemini-cli` |
 | VS Code Copilot | agent-mode commands, reads and edits, plus its MCP servers | `connect agents --agent vscode` |
 | Antigravity | terminal commands, reads and writes, plus its MCP servers | `connect agents --agent antigravity` |
@@ -192,17 +192,40 @@ each call is checked first (with `GATEWAY_URL` and `GATEWAY_API_KEY` set in the 
 
 ```bash
 squidbrake proxy --app linear --url https://mcp.linear.app/mcp          # a remote MCP server
+squidbrake proxy --app github --url https://api.githubcopilot.com/mcp/ --header 'Authorization: Bearer ${GITHUB_TOKEN}'
 squidbrake proxy --app stripe -- npx -y @stripe/mcp --tools=all          # one started by a command
 ```
 
-`squidbrake connect guard` does this for the servers your agents already use.
+`squidbrake connect guard` does this for the servers your agents already use, including remote ones with their own
+auth headers.
 
-**Python** - wrap your tools:
+**Agents that connect to MCP by URL** (ChatGPT and claude.ai connectors, Devin, n8n, cloud agents) - serve the proxy
+over HTTP. The agent adds `https://your-host:9000/mcp` as its MCP server and sends the token
+(`Authorization: Bearer`, `X-Squidbrake-Token`, or `?token=` for clients that take only a URL):
+
+```bash
+squidbrake proxy --app github --serve 0.0.0.0:9000 --token "$PROXY_TOKEN" -- npx -y @modelcontextprotocol/server-github
+```
+
+Each connected conversation is checked on its own, so one agent's chain never mixes with another's. A caller can
+name its conversation with an `X-Squidbrake-Session` header. Put HTTPS in front of it (Caddy, a tunnel) before
+exposing it.
+
+**Python agent frameworks** - OpenAI Agents SDK, LangChain / LangGraph, CrewAI, PydanticAI, smolagents, Google ADK:
+put all of an agent's tools behind it in one line. A call Squidbrake stops doesn't run, and the model gets a
+"NOT RUN: ..." message as the tool's result:
 
 ```python
-from client import Gateway, Denied
-gw = Gateway("https://gateway.example.com", api_key="...", source="my-agent", session_id=run_id)
+from squidbrake.client import Gateway          # pip install squidbrake (or drop client.py into your project)
+gw = Gateway("https://gateway.example.com", api_key="...", source="support-agent", session_id=run_id)
 
+agent = Agent(name="support", tools=gw.guard_tools([lookup_order, refund, send_email]))   # OpenAI Agents SDK
+graph = create_react_agent(llm, gw.guard_tools(tools))                                      # LangGraph
+```
+
+Or one function at a time (raises `Denied` when it's stopped):
+
+```python
 @gw.guard(name="shell.exec")
 def shell_exec(command: str): ...
 ```

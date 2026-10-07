@@ -11,6 +11,7 @@ Settings (environment variables, set in the agent's MCP config):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -30,6 +31,8 @@ SOURCE = os.getenv("GATEWAY_SOURCE", "mcp-agent")
 APPROVAL_WAIT = float(os.getenv("APPROVAL_WAIT", "50"))
 # One MCP server process per agent conversation, so this groups a conversation's calls in the dashboard.
 SESSION = f"{SOURCE}-{datetime.now().strftime('%m%d-%H%M')}-{uuid.uuid4().hex[:4]}"
+# Served over HTTP (gateway_proxy.py --serve), one process has many conversations: each request sets its own.
+CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("squidbrake_session", default=None)
 # Calls waiting for a person are also written here, so an approval still runs if the agent app restarts this
 # connector in the meantime (Antigravity does). One file per call; claiming it (a rename) makes it run only once.
 PENDING_DIR = Path(os.getenv("GATEWAY_PENDING_DIR") or Path(tempfile.gettempdir()) / "squidbrake-pending")
@@ -157,7 +160,7 @@ class GatewayError(Exception):
 async def gw_check(name: str, input: Any, kind: str = "tool_call") -> dict:
     try:
         r = await http().post("/v1/events", json={"name": name, "kind": kind, "input": input,
-                                                   "source": SOURCE, "session_id": SESSION})
+                                                   "source": SOURCE, "session_id": CURRENT_SESSION.get() or SESSION})
     except httpx.TransportError as e:
         raise GatewayError(f"Squidbrake at {GATEWAY_URL} is unreachable ({type(e).__name__}), so nothing was run")
     if r.status_code == 401:

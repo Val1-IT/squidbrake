@@ -354,10 +354,10 @@ def guard(args) -> None:
                 if not isinstance(entry, dict) or _ours(entry) or entry.get("disabled"):
                     continue
                 remote = entry.get("url") or entry.get("serverUrl") or entry.get("httpUrl")
-                if remote and entry.get("headers"):
-                    skipped.append(f"{name} (remote with its own headers)")
-                    continue
-                target = ["--url", remote] if remote else ["--", entry.get("command", ""), *entry.get("args", [])]
+                headers = entry.get("headers") if isinstance(entry.get("headers"), dict) else {}
+                # a remote server's own headers (its auth) go along to it through the proxy
+                target = (["--url", remote, *[a for k, v in headers.items() for a in ("--header", f"{k}: {v}")]]
+                          if remote else ["--", entry.get("command", ""), *entry.get("args", [])])
                 if not remote and not entry.get("command"):
                     skipped.append(name)
                     continue
@@ -416,8 +416,11 @@ def hook_agents() -> dict[str, dict]:
     def cursor(data, cmd):
         data.setdefault("version", 1)
         hooks = data.setdefault("hooks", {})
-        for ev in ("beforeShellExecution", "beforeReadFile"):
-            hooks[ev] = _without_ours(hooks.get(ev)) + ([{"command": cmd, "timeout": 600, "failClosed": True}] if cmd else [])
+        # shell, reads and MCP calls have their own hooks; preToolUse (newer Cursor) adds file edits and deletes
+        for ev, matcher in (("beforeShellExecution", None), ("beforeReadFile", None), ("beforeMCPExecution", None),
+                            ("preToolUse", "Write|Delete")):
+            ours = {"command": cmd, "timeout": 600, "failClosed": True, **({"matcher": matcher} if matcher else {})}
+            hooks[ev] = _without_ours(hooks.get(ev)) + ([ours] if cmd else [])
             if not hooks[ev]:
                 hooks.pop(ev)
 
@@ -445,14 +448,14 @@ def hook_agents() -> dict[str, dict]:
 
     return {
         "cursor": {"present": (home / ".cursor").exists(), "file": home / ".cursor" / "hooks.json", "edit": cursor,
-                   "covers": "terminal commands and file reads"},
+                   "covers": "terminal commands, file reads, edits and deletes, and MCP tools"},
         "gemini-cli": {"present": bool(shutil.which("gemini")) or (home / ".gemini" / "settings.json").exists(),
                        "file": home / ".gemini" / "settings.json",
                        "edit": grouped("BeforeTool", "run_shell_command|write_file|replace|read_file|read_many_files", 600000),
                        "covers": "shell commands, file reads, writes and edits"},
         "codex": {"present": bool(shutil.which("codex")) or (home / ".codex").exists(), "file": home / ".codex" / "hooks.json",
-                  "edit": grouped("PreToolUse", "Bash|shell|apply_patch|Edit|Write", 600),
-                  "covers": "shell commands and edits"},
+                  "edit": grouped("PreToolUse", "Bash|shell|apply_patch|Edit|Write|mcp__.*", 600),
+                  "covers": "shell commands, edits and MCP tools"},
         "vscode": {"present": (_user_dir() / "Code" / "User").exists() or (home / ".copilot").exists(),
                    "file": home / ".copilot" / "hooks" / "squidbrake.json", "edit": vscode,
                    "covers": "Copilot agent mode: terminal commands, reads and edits"},
