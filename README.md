@@ -381,6 +381,19 @@ Rules with `action: review` hold the call until a person approves or rejects it:
 - Every decision is stored on the event with who decided, when, and their note.
 - Set `APPROVAL_WEBHOOK_URL` (plus `PUBLIC_URL`) to get a Slack- or Discord-formatted message with a link to the event
   whenever something needs approval.
+- **Microsoft Teams and email:** in Settings, paste a Teams Workflows webhook ("Post to a channel when a webhook
+  request is received"), or an SMTP server and the addresses to send to. Each approval links to the one-tap review
+  page; an email never decides anything by being opened, since mail scanners open links.
+- **Every Monday, what it caught:** Slack, Discord, Teams and email get the week's summary: what was blocked, rejected,
+  or (in shadow mode) would have been, why, and what it would have changed. *Reports → What it caught* shows it any
+  time, with *Copy weekly report*.
+- **Stop asking about what you always approve:** *Settings → Rules* suggests an `allow` rule for anything people
+  approved 5+ times in 30 days and never rejected (never for money, an agent's own guard rails, or what the command,
+  data or chain checks held). *Allow it* adds the rule right before the one that held it, with a backup.
+- **Starter packs** for a support, finance or ops agent add a block of rules after the read rule, so blocks above
+  still win.
+- **To your SIEM:** *Settings → Send to your SIEM* streams every decision to Splunk (HEC), Datadog (logs) or any HTTP
+  endpoint, in batches in the background. Or set `SIEM_URL`, `SIEM_TOKEN`, `SIEM_FORMAT`.
 - **Approve and Reject right in Slack:** in Settings, open *Approve and Reject right in Slack*, create the Slack app
   from the manifest shown there, install it to your approvals channel, and paste its webhook URL and signing secret.
   Each click is checked against the signing secret and carries that one event's signed token; the message then says

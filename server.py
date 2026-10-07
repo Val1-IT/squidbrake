@@ -67,7 +67,9 @@ import mcp_hub
 import mcp_oauth
 import outbound
 import pilot
+import policy_edit
 import risk
+import siem
 import taint
 import verify
 
@@ -1356,6 +1358,7 @@ def record_event(ev: EventIn, client: str, client_ip: str | None) -> Decision:
               signals=[f"{x['check']}:{x['effect']}" for x in signals] or None, would=would)
     audit_log.info(json.dumps({k: row[k] for k in ("id", "created_at", "client", "source", "session_id",
                                                     "kind", "name", "status", "rule_id")}))
+    forwarder.emit(siem_record("decision", row))
     if status == "awaiting_approval":
         notify_approval_needed(row)
     return Decision(event_id=row["id"], decision=decision, reason=reason, rule_id=rule_id,
@@ -1370,7 +1373,12 @@ def settings() -> dict:
                 "ntfy_topic": os.getenv("NTFY_TOPIC", ""), "ntfy_server": os.getenv("NTFY_SERVER", "https://ntfy.sh"),
                 "notify_as": os.getenv("NOTIFY_APPROVER", "admin"), "weekly_digest": True,
                 "second_person": os.getenv("SECOND_PERSON_APPROVAL", "").lower() in ("1", "true", "yes"),
-                "customers": [], "slack_signing_secret": os.getenv("SLACK_SIGNING_SECRET", "")}
+                "customers": [], "slack_signing_secret": os.getenv("SLACK_SIGNING_SECRET", ""),
+                "teams_webhook": os.getenv("TEAMS_WEBHOOK_URL", ""), "email_to": os.getenv("APPROVAL_EMAIL_TO", ""),
+                "smtp_host": os.getenv("SMTP_HOST", ""), "smtp_port": int(os.getenv("SMTP_PORT", "587") or 587),
+                "smtp_user": os.getenv("SMTP_USER", ""), "smtp_password": os.getenv("SMTP_PASSWORD", ""),
+                "smtp_from": os.getenv("SMTP_FROM", ""), "siem_url": os.getenv("SIEM_URL", ""),
+                "siem_token": os.getenv("SIEM_TOKEN", ""), "siem_format": os.getenv("SIEM_FORMAT", "json")}
     return {**defaults, **state_get("settings", {})}
 
 
@@ -1464,6 +1472,55 @@ def slack_blocks(title: str, body: str, token: str, link: str, expires: str) -> 
     ]
 
 
+def email_ready(cfg: dict) -> bool:
+    return bool(cfg.get("smtp_host") and cfg.get("email_to"))
+
+
+def send_email(cfg: dict, subject: str, text: str) -> bool:
+    """Email `text` to the addresses in Settings, through the SMTP server set there. Never raises."""
+    if not email_ready(cfg):
+        return False
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["Subject"] = subject[:200]
+    msg["From"] = cfg.get("smtp_from") or cfg.get("smtp_user") or "squidbrake@localhost"
+    msg["To"] = ", ".join(a.strip() for a in str(cfg["email_to"]).split(",") if a.strip())
+    msg.set_content(text)
+    port = int(cfg.get("smtp_port") or 587)
+    try:
+        smtp = smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=15) if port == 465 else smtplib.SMTP(cfg["smtp_host"], port, timeout=15)
+        with smtp:
+            if port != 465:
+                smtp.ehlo()
+                if smtp.has_extn("starttls"):
+                    smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password") or "")
+            smtp.send_message(msg)
+        return True
+    except Exception:
+        log.exception("email to %s failed", msg["To"])
+        return False
+
+
+def send_teams(webhook: str, title: str, body: str, link: str | None = None) -> bool:
+    """A Microsoft Teams message (a Workflows webhook: "Post to a channel when a webhook request is received"), as an
+    Adaptive Card. Its button opens the one-tap approval page; Teams can't decide in the card itself without an app."""
+    card = {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.4",
+            "body": [{"type": "TextBlock", "text": title[:300], "weight": "Bolder", "size": "Medium", "wrap": True},
+                     {"type": "TextBlock", "text": body[:3500], "wrap": True}]}
+    if link:
+        card["actions"] = [{"type": "Action.OpenUrl", "title": "Review and approve or reject", "url": link}]
+    try:
+        httpx.post(webhook, timeout=10, json={"type": "message", "attachments": [
+            {"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}).raise_for_status()
+        return True
+    except Exception:
+        log.exception("Teams message failed")
+        return False
+
+
 def _truncate_discord(s: str, limit: int) -> str:
     if len(s) <= limit:
         return s
@@ -1480,7 +1537,7 @@ def notify_approval_needed(row: dict) -> None:
     """Tell a human, wherever they are: Slack (or any incoming webhook) and/or a phone push via ntfy.
     Both carry a signed link that opens a one-tap Approve / Reject page."""
     cfg = settings()
-    if not (cfg["slack_webhook"] or cfg["ntfy_topic"]):
+    if not (cfg["slack_webhook"] or cfg["ntfy_topic"] or cfg.get("teams_webhook") or email_ready(cfg)):
         return
     base = (cfg["public_url"] or "http://localhost:8080").rstrip("/")
     token = make_link_token(row["id"], cfg["notify_as"])
@@ -1529,8 +1586,25 @@ def notify_approval_needed(row: dict) -> None:
                 }).raise_for_status()
             except Exception:
                 log.exception("phone notification failed for event %s", row["id"])
+        if cfg.get("teams_webhook"):
+            send_teams(cfg["teams_webhook"], title, f"{body}\n\nExpires {expires}", link)
+        # Only the review page's link: mail scanners open links, so nothing in an email decides by being opened.
+        send_email(cfg, title, f"{body}\n\nReview and approve or reject: {link}\n(expires {expires})")
 
     threading.Thread(target=send, daemon=True).start()
+
+
+forwarder = siem.Forwarder(lambda: settings())
+
+
+def siem_record(kind: str, r) -> dict:
+    """What a SIEM gets for an event: who, which tool, the decision and why, and the stored (redacted) input."""
+    g = r.get if isinstance(r, dict) else (lambda k, d=None: getattr(r, k, d))
+    return {"type": kind, "id": g("id"), "time": g("decided_at") or g("created_at"), "agent": g("source") or g("client"),
+            "key": g("client"), "session": g("session_id"), "tool": g("name"), "kind": g("kind"),
+            "decision": g("decision"), "status": g("status"), "rule_id": g("rule_id"), "reason": g("reason"),
+            "decided_by": g("decided_by"), "note": g("decision_note"), "risk": g("risk"), "would": g("would"),
+            "input": (g("input") or "")[:500] or None}
 
 
 def expire_overdue() -> int:
@@ -1550,6 +1624,7 @@ def expire_overdue() -> int:
                     status="denied" if outcome == "deny" else "pending", decision=outcome, decided_by="timeout",
                     decided_at=now, decision_note=f"no human decision before the deadline; on_timeout={outcome}")).rowcount:
                 audit(conn, "timeout", "event.expired", eid, outcome=outcome)
+                forwarder.emit(siem_record("timed_out", conn.execute(select(events).where(events.c.id == eid)).first()))
                 n += 1
     if n:
         log.info("approvals: %d expired", n)
@@ -1589,6 +1664,8 @@ def decide(event_id: str, outcome: Literal["allow", "deny"], who: str, note: str
         if not won:
             raise HTTPException(409, "event was decided by someone else a moment ago")
         audit(conn, who, "event.approved" if outcome == "allow" else "event.rejected", event_id, note=note, via=via)
+        forwarder.emit(siem_record("approved" if outcome == "allow" else "rejected",
+                                   conn.execute(select(events).where(events.c.id == event_id)).first()))
     audit_log.info(json.dumps({"id": event_id, "approval": outcome, "decided_by": who, "via": via}))
     return current_decision(event_id)
 
@@ -1671,9 +1748,63 @@ async def _expiry_loop():
         await asyncio.sleep(2)
 
 
-def digest_text(r: dict) -> str:
+CAUGHT_ORDER = {"blocked": 0, "rejected": 1, "would have been blocked": 2, "would have waited for a person": 3}
+
+
+def caught(days: int = 7, limit: int = 8) -> list[dict]:
+    """What Squidbrake stopped (or, in shadow mode, would have), newest of each kind first: the call, why, what it
+    would have changed (when the hook measured it), and who decided. Inputs are the stored, redacted copies."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    blocked = (events.c.status == "denied") & events.c.decided_by.is_(None)
+    rejected = (events.c.decision == "deny") & events.c.decided_by.isnot(None) & (events.c.decided_by != "timeout")
+    with engine.connect() as conn:
+        rows = conn.execute(select(events).where(
+            events.c.created_at >= since, blocked | rejected | events.c.would.isnot(None))
+            .order_by(events.c.created_at.desc()).limit(500)).all()
+    out = []
+    for r in rows:
+        if r.would:
+            outcome = "would have been blocked" if r.would == "deny" else "would have waited for a person"
+        elif r.decided_by:
+            outcome = "rejected"
+        else:
+            outcome = "blocked"
+        try:
+            inp = json.loads(r.input or "null")
+        except ValueError:
+            inp = r.input
+        what = (inp.get("command") if isinstance(inp, dict) else None) or r.name
+        effect = next((s["message"] for s in json.loads(r.signals or "[]") if s.get("check") == "effect"), None)
+        reason = (r.reason or "").removeprefix("Shadow mode, allowed. ")
+        out.append({"at": r.created_at, "agent": r.source or r.client, "tool": r.name, "what": str(what)[:120],
+                    "why": reason[:200], "outcome": outcome, "by": r.decided_by if outcome == "rejected" else None,
+                    "note": r.decision_note if outcome == "rejected" else None, "effect": effect})
+    out.sort(key=lambda x: x["at"], reverse=True)               # newest first...
+    out.sort(key=lambda x: CAUGHT_ORDER[x["outcome"]])         # ...within blocked, rejected, would-block, would-hold
+    seen, picked = set(), []
+    for x in out:                                    # the same thing caught ten times is one line
+        key = (x["outcome"], x["what"])
+        if key not in seen:
+            seen.add(key)
+            picked.append(x)
+    return picked[:limit]
+
+
+def digest_text(r: dict, catches: list[dict] | None = None) -> str:
     a, s = r["approvals"], r["by_status"]
-    lines = [f":bar_chart: *What your AI agents did this week* ({r['days']} days)",
+    sh = r.get("shadow") or {}
+    lines = [f":bar_chart: *What your AI agents did this week* ({r['days']} days)"]
+    if sh.get("would_block") or sh.get("would_hold"):
+        lines.append(f"Shadow mode: nothing was stopped, but Squidbrake would have blocked {sh['would_block']} and held "
+                     f"{sh['would_hold']} for a person.")
+    if catches:
+        lines.append("*What it caught:*")
+        for c in catches:
+            who = f" by {c['by']}" + (f' ("{c["note"]}")' if c.get("note") else "") if c["by"] else ""
+            lines.append(f"• {c['outcome'].capitalize()}{who}: `{c['what']}` ({c['agent']}). {c['why']}"
+                         + (f" It would have: {c['effect']}" if c.get("effect") else ""))
+    lines += [
+             f"Signed off by a person: {a['held']} held, {a['approved']} approved, {a['rejected']} rejected, "
              f"Signed off by a person: {a['held']} held, {a['approved']} approved, {a['rejected']} rejected, "
              f"{a['timed_out']} timed out"
              + (f", median decision time {int(a['median_seconds_to_decide'])}s." if a['median_seconds_to_decide'] is not None else "."),
@@ -1692,17 +1823,27 @@ def digest_text(r: dict) -> str:
 def maybe_send_digest() -> None:
     """Every Monday from 09:00 (server local time), once per week, post last week's summary to Slack."""
     cfg, now = settings(), datetime.now()
-    if not (cfg["slack_webhook"] and cfg.get("weekly_digest")) or now.weekday() != 0 or now.hour < 9:
+    if not ((cfg["slack_webhook"] or cfg.get("teams_webhook") or email_ready(cfg)) and cfg.get("weekly_digest")) \
+            or now.weekday() != 0 or now.hour < 9:
         return
     week = now.strftime("%G-W%V")
     with audited_tx() as conn:
         if conn.execute(select(gateway_state.c.value).where(gateway_state.c.key == "digest_week")).scalar() == json.dumps(week):
             return
         state_set(conn, "digest_week", week)
-    try:
-        httpx.post(cfg["slack_webhook"], json={"text": digest_text(build_report(7))}, timeout=15).raise_for_status()
-    except Exception:
-        log.exception("weekly digest failed")
+    text = digest_text(build_report(7), caught(7))
+    plain = text.replace(":bar_chart: ", "").replace("*", "").replace("`", "")
+    if cfg["slack_webhook"]:
+        discord = any(h in cfg["slack_webhook"] for h in ("discord.com/api/webhooks/", "discordapp.com/api/webhooks/"))
+        try:
+            body = {"content": _truncate_discord(text.replace(":bar_chart: ", "").replace("*", "**"), 1999),
+                    "allowed_mentions": {"parse": []}} if discord else {"text": text}
+            httpx.post(cfg["slack_webhook"], json=body, timeout=15).raise_for_status()
+        except Exception:
+            log.exception("weekly digest failed")
+    if cfg.get("teams_webhook"):
+        send_teams(cfg["teams_webhook"], "What your AI agents did this week", plain)
+    send_email(cfg, "What your AI agents did this week", plain)
 
 
 async def _digest_loop():
@@ -1962,6 +2103,16 @@ class SettingsIn(BaseModel):
     second_person: bool | None = None
     customers: list[str] | None = Field(None, max_length=5000)   # names to keep out of PRs, issues, posts (data_checks)
     slack_signing_secret: str | None = Field(None, max_length=200)  # Squidbrake's Slack app: Approve / Reject buttons
+    teams_webhook: str | None = Field(None, max_length=1000)     # a Teams Workflows webhook: approvals and the weekly report
+    email_to: str | None = Field(None, max_length=1000)          # comma-separated: approvals and the weekly report by email
+    smtp_host: str | None = Field(None, max_length=200)
+    smtp_port: int | None = Field(None, ge=1, le=65535)
+    smtp_user: str | None = Field(None, max_length=200)
+    smtp_password: str | None = Field(None, max_length=500)
+    smtp_from: str | None = Field(None, max_length=200)
+    siem_url: str | None = Field(None, max_length=1000)          # every decision, as it happens, to Splunk / Datadog / any HTTP
+    siem_token: str | None = Field(None, max_length=500)
+    siem_format: Literal["json", "splunk", "datadog"] | None = None
 
 
 @app.get("/v1/settings")
@@ -1972,10 +2123,13 @@ def get_settings(_: str = Depends(admin)):
 @app.put("/v1/settings")
 def put_settings(body: SettingsIn, who: str = Depends(admin)):
     changes = body.model_dump(exclude_none=True)
-    for k in ("public_url", "slack_webhook", "ntfy_server"):
+    for k in ("public_url", "slack_webhook", "ntfy_server", "teams_webhook", "siem_url"):
         v = changes.get(k)
         if v and not re.match(r"^https?://", v):
             raise HTTPException(400, f"{k} must start with http:// or https://")
+    if changes.get("email_to") and not all(re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", a.strip())
+                                           for a in changes["email_to"].split(",") if a.strip()):
+        raise HTTPException(400, "email_to: email addresses, separated by commas")
     if changes.get("ntfy_topic") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", changes["ntfy_topic"]):
         raise HTTPException(400, "ntfy_topic: letters, digits, '-' and '_' only")
     if changes.get("notify_as") and not can_approve(changes["notify_as"]):
@@ -1994,12 +2148,29 @@ def put_settings(body: SettingsIn, who: str = Depends(admin)):
     return settings()
 
 
+@app.post("/v1/settings/siem-test")
+def siem_test(who: str = Depends(admin)):
+    """Send one record to the SIEM now and say whether it took it."""
+    cfg = settings()
+    if not cfg.get("siem_url"):
+        raise HTTPException(400, "set the SIEM's URL first")
+    ok = forwarder.flush([{"type": "test", "id": "test", "time": utcnow(), "agent": "squidbrake", "tool": "test",
+                           "decision": "allow", "reason": f"Test from {who}", "epoch": time.time()}])
+    return {"ok": ok, "error": None if ok else "the SIEM didn't accept it (see the gateway log for why)"}
+
+
 @app.post("/v1/settings/test")
 def test_notification(who: str = Depends(admin)):
     cfg = settings()
-    if not (cfg["slack_webhook"] or cfg["ntfy_topic"]):
-        raise HTTPException(400, "set a Slack webhook or a phone topic first")
+    if not (cfg["slack_webhook"] or cfg["ntfy_topic"] or cfg.get("teams_webhook") or email_ready(cfg)):
+        raise HTTPException(400, "set Slack, Teams, email or a phone topic first")
     sent, errors = [], []
+    if cfg.get("teams_webhook"):
+        (sent.append("Teams") if send_teams(cfg["teams_webhook"], "Squidbrake", f"Test from {who}: notifications work.")
+         else errors.append("Teams: the webhook didn't accept it (see the gateway log)"))
+    if email_ready(cfg):
+        (sent.append("email") if send_email(cfg, "Squidbrake test", f"Test from {who}: approval requests will come here.")
+         else errors.append("Email: the SMTP server didn't accept it (see the gateway log)"))
     if cfg["slack_webhook"]:
         try:
             httpx.post(cfg["slack_webhook"], json={"text": f":white_check_mark: Squidbrake test from {who}: notifications work."},
@@ -2528,6 +2699,76 @@ async def proxy(upstream: str, path: str, request: Request, client: str = Depend
     headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP}
     headers["X-Gateway-Event-Id"] = decision.event_id
     return Response(content=resp.content, status_code=resp.status_code, headers=headers)
+
+
+# --------------------------------------------------------------------------- adding rules from the dashboard
+
+def _rule_ids(path: Path) -> list[str]:
+    p = Policy(path)
+    p._maybe_reload()
+    return [r["id"] for r in p.rules]
+
+
+def _add_rules(block: str, before: str | None, who: str, what: str) -> dict:
+    try:
+        backup = policy_edit.insert(policy.path, block, before, _rule_ids)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"couldn't write the rules file: {e}")
+    policy._maybe_reload()
+    with audited_tx() as conn:
+        audit(conn, who, "policy.edited", what, backup=backup.name)
+    return {"ok": True, "backup": backup.name, "rules": len(policy.rules)}
+
+
+def _held_and_decided(days: int = 30):
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    with engine.connect() as conn:
+        return conn.execute(select(events.c.name, events.c.input, events.c.rule_id, events.c.decision).where(
+            events.c.created_at >= since, events.c.approval_deadline.isnot(None), events.c.decided_by.isnot(None),
+            events.c.decided_by != "timeout")).all()
+
+
+@app.get("/v1/report/weekly")
+def weekly_report(days: int = Query(7, ge=1, le=90), _: str = Depends(person)):
+    """The weekly summary (what Squidbrake caught, and the counts), ready to paste or forward."""
+    catches = caught(days)
+    text = digest_text(build_report(days), catches)
+    return {"text": text.replace(":bar_chart: ", "").replace("*", "").replace("`", ""), "caught": catches}
+
+
+@app.get("/v1/policy/suggestions")
+def rule_suggestions(_: str = Depends(admin)):
+    """Rules to stop asking about what people keep approving (5+ times in 30 days, never rejected)."""
+    policy._maybe_reload()
+    existing = {r["id"] for r in policy.rules}
+    return {"suggestions": [s for s in policy_edit.suggestions(_held_and_decided(), policy.commands["tools"])
+                            if s["id"] not in existing]}
+
+
+@app.post("/v1/policy/suggestions/{sid}/apply")
+def apply_suggestion(sid: str, who: str = Depends(admin)):
+    s = next((x for x in policy_edit.suggestions(_held_and_decided(), policy.commands["tools"]) if x["id"] == sid), None)
+    if s is None:
+        raise HTTPException(404, "that suggestion isn't there any more")
+    return _add_rules(s["yaml"], s["held_by"], who, f"suggestion:{sid}")
+
+
+@app.get("/v1/policy/packs")
+def rule_packs(_: str = Depends(admin)):
+    policy._maybe_reload()
+    have = {r["id"] for r in policy.rules}
+    return {"packs": [{"id": k, "title": p["title"], "about": p["about"], "yaml": p["yaml"],
+                       "added": policy_edit._ids(p["yaml"]) <= have} for k, p in policy_edit.PACKS.items()]}
+
+
+@app.post("/v1/policy/packs/{pack}/apply")
+def apply_pack(pack: str, who: str = Depends(admin)):
+    p = policy_edit.PACKS.get(pack)
+    if p is None:
+        raise HTTPException(404, "no such pack")
+    return _add_rules(p["yaml"], None, who, f"pack:{pack}")
 
 
 # --------------------------------------------------------------------------- MCP servers by URL (mcp_hub.py)
