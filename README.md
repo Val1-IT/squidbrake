@@ -199,8 +199,14 @@ squidbrake proxy --app stripe -- npx -y @stripe/mcp --tools=all          # one s
 `squidbrake connect guard` does this for the servers your agents already use, including remote ones with their own
 auth headers.
 
-**Agents that connect to MCP by URL** (ChatGPT and claude.ai connectors, Devin, n8n, cloud agents) - serve the proxy
-over HTTP. The agent adds `https://your-host:9000/mcp` as its MCP server and sends the token
+**Agents that connect to MCP by URL** (ChatGPT and claude.ai connectors, Devin, n8n, cloud agents) - easiest: in the
+dashboard, **Settings → Agents that connect by URL**, add the app's MCP server (its URL, and the header its auth
+needs). The agent then uses `https://<your gateway>/mcp/<name>` and signs in with one of its agent keys
+(`Authorization: Bearer gw_...`, or `?key=gw_...` for apps that take only a URL). Every call is checked and recorded as
+that agent; the app's own token stays on the gateway and is never shown again. Hosted dashboards take servers by URL;
+servers started by a command need a self-hosted gateway with `SQUIDBRAKE_MCP_COMMANDS=1`.
+
+Or run the proxy yourself and serve it over HTTP. The agent adds `https://your-host:9000/mcp` as its MCP server and sends the token
 (`Authorization: Bearer`, `X-Squidbrake-Token`, or `?token=` for clients that take only a URL):
 
 ```bash

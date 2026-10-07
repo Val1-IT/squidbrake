@@ -112,22 +112,36 @@ def _conversation(ctx) -> str | None:
         return None
     headers = request.headers
     if given := headers.get("x-squidbrake-session"):
-        return f"{gw.SOURCE}-{re.sub(r'[^A-Za-z0-9_.:-]', '', given)[:60]}"
+        return f"{gw.source()}-{re.sub(r'[^A-Za-z0-9_.:-]', '', given)[:60]}"
     conn = getattr(getattr(ctx, "session", None), "_connection", None)
     if sid := getattr(conn, "session_id", None) or headers.get("mcp-session-id"):
-        return f"{gw.SOURCE}-{sid[:24]}"
+        return f"{gw.source()}-{sid[:24]}"
     params = getattr(conn, "client_params", None)
     info = getattr(params, "client_info", None) or getattr(params, "clientInfo", None)
-    who = (getattr(info, "name", None) or "client", getattr(getattr(request, "client", None), "host", None))
+    who = (gw.source(), getattr(info, "name", None) or "client", getattr(getattr(request, "client", None), "host", None))
     now = time.monotonic()
     sid, last = _recent.get(who, (None, 0.0))
     if not sid or now - last > IDLE_NEW_CONVERSATION:
-        sid = f"{gw.SOURCE}-{uuid.uuid4().hex[:12]}"
+        sid = f"{gw.source()}-{uuid.uuid4().hex[:12]}"
     _recent[who] = (sid, now)
     return sid
 
 
+def _caller(ctx) -> None:
+    """Served over HTTP: a caller that sends its own agent key (X-Gateway-Key) is checked and recorded as itself, and
+    may say what to call it (X-Squidbrake-Source). The gateway's /mcp/<name> endpoint sends both."""
+    request = getattr(ctx, "request", None)
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return
+    if key := headers.get("x-gateway-key"):
+        gw.CURRENT_KEY.set(key)
+    if name := re.sub(r"[^A-Za-z0-9_.:@-]", "", headers.get("x-squidbrake-source") or "")[:60]:
+        gw.CURRENT_SOURCE.set(name)
+
+
 async def call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+    _caller(ctx)
     if conv := _conversation(ctx):
         gw.CURRENT_SESSION.set(conv)
     args = params.arguments or {}
@@ -211,8 +225,44 @@ def require_token(app, token: str):
     return guarded
 
 
+def _alive(pid: int) -> bool:
+    if sys.platform == "win32":     # never os.kill here: on Windows it terminates the process
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k32.GetExitCodeProcess(h, ctypes.byref(code))
+        k32.CloseHandle(h)
+        return code.value == 259                         # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _exit_with_parent() -> None:
+    """Started by the gateway (mcp_hub.py): go when it goes, even if it crashed and couldn't stop us."""
+    pid = int(os.getenv("SQUIDBRAKE_PARENT_PID") or 0)
+    if not pid:
+        return
+
+    def watch():
+        while _alive(pid):
+            time.sleep(2)
+        log("the gateway that started this proxy is gone; stopping")
+        os._exit(0)
+    import threading
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def serve(args) -> None:
     import uvicorn
+    _exit_with_parent()
     host, _, port = args.serve.rpartition(":")
     host = host or "127.0.0.1"
     token = args.token or os.getenv("SQUIDBRAKE_PROXY_TOKEN", "")

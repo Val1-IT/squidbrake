@@ -61,6 +61,7 @@ from sqlalchemy import (
 import commands
 import evidence
 import lockdown
+import mcp_hub
 import pilot
 import risk
 import taint
@@ -1668,6 +1669,10 @@ async def lifespan(app: FastAPI):
             log.warning("GATEWAY_APPROVERS names keys that don't exist: %s", ", ".join(sorted(unknown)))
     policy._maybe_reload()
     app.state.http = httpx.AsyncClient(timeout=PROXY_TIMEOUT, follow_redirects=False)
+    # MCP by URL: no read timeout, a held call or an event stream can stay open a long time
+    app.state.mcp_http = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None), follow_redirects=False)
+    if servers := mcp_servers():
+        await run_in_threadpool(hub.sync, servers)
     tasks = [asyncio.create_task(_expiry_loop()), asyncio.create_task(_digest_loop())]
     if RETENTION_DAYS > 0:
         tasks.append(asyncio.create_task(_retention_loop()))
@@ -1679,6 +1684,8 @@ async def lifespan(app: FastAPI):
     for t in tasks:
         t.cancel()
     await app.state.http.aclose()
+    await app.state.mcp_http.aclose()
+    hub.stop_all()
 
 
 app = FastAPI(title="Squidbrake", version="1.0.0", lifespan=lifespan)
@@ -2392,6 +2399,118 @@ async def proxy(upstream: str, path: str, request: Request, client: str = Depend
     return Response(content=resp.content, status_code=resp.status_code, headers=headers)
 
 
+# --------------------------------------------------------------------------- MCP servers by URL (mcp_hub.py)
+# For agents that connect to MCP by URL: ChatGPT and claude.ai connectors, Devin, n8n, cloud agents.
+
+hub = mcp_hub.Hub(lambda: f"http://127.0.0.1:{os.getenv('SQUIDBRAKE_LISTEN_PORT') or os.getenv('PORT') or 8080}",
+                  KEYS_PATH.parent)
+MCP_FORWARD = ("content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id", "x-squidbrake-session")
+
+
+def mcp_servers() -> dict[str, dict]:
+    return state_get("mcp_servers", {}) or {}
+
+
+class McpServerIn(BaseModel):
+    url: str | None = Field(None, max_length=2000)
+    headers: dict[str, str] | None = None
+    command: str | None = Field(None, max_length=500)
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+
+
+def _mcp_public(name: str, cfg: dict, request: Request) -> dict:
+    base = (settings().get("public_url") or str(request.base_url)).rstrip("/")
+    return {"name": name, "endpoint": f"{base}/mcp/{name}", "running": hub.running(name),
+            "url": cfg.get("url"), "command": " ".join([cfg["command"], *cfg.get("args", [])]) if cfg.get("command") else None,
+            "headers": sorted(cfg.get("headers") or {})}           # names only: the values are secrets
+
+
+@app.get("/v1/mcp-servers")
+def list_mcp_servers(request: Request, _: str = Depends(admin)):
+    return {"servers": [_mcp_public(n, c, request) for n, c in sorted(mcp_servers().items())],
+            "commands_allowed": mcp_hub.COMMANDS_ALLOWED}
+
+
+@app.put("/v1/mcp-servers/{name}")
+def put_mcp_server(name: str, body: McpServerIn, request: Request, who: str = Depends(admin)):
+    try:
+        cfg = mcp_hub.check(name, body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    servers = {**mcp_servers(), name: cfg}
+    with audited_tx() as conn:
+        state_set(conn, "mcp_servers", servers)
+        audit(conn, who, "mcp_server.saved", name, url=cfg.get("url"), headers=sorted(cfg.get("headers") or {}))
+    hub.sync(servers)
+    return _mcp_public(name, cfg, request)
+
+
+@app.delete("/v1/mcp-servers/{name}")
+def delete_mcp_server(name: str, who: str = Depends(admin)):
+    servers = mcp_servers()
+    if servers.pop(name, None) is None:
+        raise HTTPException(404, f"no MCP server named '{name}'")
+    with audited_tx() as conn:
+        state_set(conn, "mcp_servers", servers)
+        audit(conn, who, "mcp_server.removed", name)
+    hub.sync(servers)
+    return {"ok": True}
+
+
+def _mcp_caller(request: Request) -> tuple[str, str]:
+    """(key name, secret) of whoever calls /mcp/<name>: an agent key as Bearer, X-Gateway-Key, or ?key= (for agents
+    that take only a URL)."""
+    h = request.headers
+    secret = h.get("x-gateway-key") or ""
+    if h.get("authorization", "").lower().startswith("bearer "):
+        secret = h["authorization"][7:].strip()
+    secret = secret or request.query_params.get("key", "")
+    who = keystore.identify(secret)
+    if who is None:
+        raise HTTPException(401, "send an agent key: Authorization: Bearer gw_..., or add ?key=gw_... to the URL",
+                            headers={"WWW-Authenticate": "Bearer"})
+    if who in READ_ONLY_KEYS:
+        raise HTTPException(403, f"'{who}' is a read-only key")
+    return who, secret
+
+
+@app.api_route("/mcp/{name}", methods=["GET", "POST", "DELETE"])
+async def mcp_endpoint(name: str, request: Request):
+    from fastapi.responses import StreamingResponse
+    who, secret = _mcp_caller(request)
+    servers = mcp_servers()
+    if name not in servers:
+        raise HTTPException(404, f"no MCP server named '{name}' on this gateway (an admin adds it in Settings)")
+    port = await run_in_threadpool(hub.port, name, servers)
+    if not port:
+        raise HTTPException(502, f"the proxy for '{name}' isn't running; see data/mcp-{name}.log")
+    headers = {k: v for k, v in request.headers.items() if k.lower() in MCP_FORWARD}
+    headers.update({"X-Squidbrake-Token": hub.token, "X-Squidbrake-Source": who})
+    if not keystore.disabled:
+        headers["X-Gateway-Key"] = secret                 # the proxy asks the gateway as this caller
+    client = request.app.state.mcp_http
+    upstream = client.build_request(request.method, f"http://127.0.0.1:{port}/mcp", headers=headers,
+                                    content=await request.body())
+    for attempt in range(20):                              # a proxy just (re)started takes a moment to listen
+        try:
+            resp = await client.send(upstream, stream=True)
+            break
+        except httpx.ConnectError:
+            if attempt == 19:
+                raise HTTPException(502, f"the proxy for '{name}' isn't answering; see data/mcp-{name}.log")
+            await asyncio.sleep(0.25)
+    out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP | {"content-length"}}
+
+    async def body():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+    return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
+
+
 # --------------------------------------------------------------------------- command line
 
 CLI = os.getenv("SQUIDBRAKE_CLI") or ("docker compose exec gateway python server.py" if IN_DOCKER else "python server.py")
@@ -2483,6 +2602,7 @@ def _cli_run(args) -> int:
     print_banner(url, created)
     if created and not IN_DOCKER and not args.no_browser:
         threading.Timer(2.0, webbrowser.open, [f"{url}/dashboard"]).start()
+    os.environ["SQUIDBRAKE_LISTEN_PORT"] = str(args.port)    # where the MCP proxies (mcp_hub.py) reach this gateway
     uvicorn.run("server:app", host=args.host, port=args.port, workers=args.workers,
                 proxy_headers=True, forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"),
                 log_level=LOG_LEVEL.lower())
