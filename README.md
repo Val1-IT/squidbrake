@@ -10,35 +10,19 @@
 [![Real incidents replayed: 12 of 13 stopped](https://img.shields.io/badge/real%20incidents%20replayed-12%20of%2013%20stopped-yellow.svg)](incidents/)
 [![Good first issues](https://img.shields.io/github/issues/batrapulkit/squidbrake/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/batrapulkit/squidbrake/labels/good%20first%20issue)
 
-![Demo: an AI agent's scam wire is blocked, a refund waits for approval and is approved from a phone](https://raw.githubusercontent.com/batrapulkit/squidbrake/main/docs/demo.gif)
+![Demo: every agent action goes on the record; a refund waits for a person and is approved from a phone; the record shows who asked, who approved and what led to it](https://raw.githubusercontent.com/batrapulkit/squidbrake/main/docs/demo.gif)
 
-**Change control for AI agents.** Every action an agent takes (running a command, editing a file, sending an
-email, issuing a refund, changing a database) goes through Squidbrake first. It is **checked** against your
-team's rules, **held for someone else to approve** when it's risky, **recorded** in a tamper-evident audit trail
-your auditor can check, and can be **stopped** instantly. One policy for Claude Code, Cursor, Codex, Gemini CLI,
-VS Code Copilot, Antigravity and your MCP tools.
+**Change control for AI agents.** Your agents run commands, edit code, send emails, issue refunds and change
+databases. Squidbrake keeps the record of every one of those changes: which agent, what it changed, who approved
+it, and what led to it. Risky changes wait for someone other than the requester to sign off; routine ones run on
+their own and are still recorded. The record is tamper-evident, readable by people who don't write code (a weekly
+summary, an evidence pack for your auditor), and destructive changes keep an undo. One policy for Claude Code,
+Cursor, Codex, Gemini CLI, VS Code Copilot, Antigravity and your MCP tools.
 
 Free and open source (Apache 2.0). Runs on your laptop or your own server; your data never leaves it.
 
-- **Rules, not vibes:** `rules.yaml` says what runs by itself, what's blocked, and what waits for a person.
-  No LLM in the decision path.
-- **Human approval:** risky actions wait in the dashboard, on your phone (one-tap links, push via ntfy) or in Slack.
+- **A second person signs off:** risky changes wait in the dashboard, on your phone (one-tap links, push via ntfy) or in Slack.
   The approver sees *what led to it*, e.g. the email the agent just read.
-- **Reads what a command really does:** `ls && rm -rf ~/`, `bash -c "..."`, `rmdir /s /q d:\` or `curl ... | sh` are
-  split and read before they run. Wiping a disk or home folder is blocked; `git push --force`, `terraform destroy`,
-  `kubectl delete` or cloud deletes wait for a person; commands that only look (`ls`, `git status`) run without asking.
-- **Catches prompt injection without a model:** if an agent sends data to an address that only a web page, email or
-  issue mentioned (not you, not your own systems), it's held and the approver is told where the address came from.
-- **Judges by history:** blocks a retry of something a person rejected, catches look-alike domains
-  (`acrne-corp.com` pretending to be `acme.com`), flags duplicate refunds, and lets you write sequence rules
-  ("deleting a database right after its backups were turned off") that say which earlier step caused them.
-- **Works with real agents:** `squidbrake connect all` connects Claude Code, Cursor, Codex, Gemini CLI, VS Code
-  Copilot and Antigravity (their commands, reads and edits, via hooks) and the MCP servers they already use; any MCP
-  app (Stripe, GitHub, Slack, databases, internal tools) can be wrapped too.
-- **For teams:** one gateway for everyone's laptops (`connect all --url https://gateway.yourcompany.com --key gw_...`, one
-  agent key per person, made in Team with "Works for" set), roles (only `finance` approves wires), **second-person approval** (nobody approves what their
-  own agent asked for), an emergency stop (all agents, one agent, or one conversation, which also ends Claude Code's
-  turn), reports, CSV export, and evidence anyone can verify offline (`python verify.py`).
 - **Shows what it will change, and keeps an undo:** before a risky command, the approver sees it measured on the
   developer's machine ("removes 3 commits from origin/main: fix login, ...", "deletes 1,204 files (56 MB) in data",
   "deletes 4,312 rows of 10,240 in orders", "destroys 12 resources in workspace prod, including 1 that holds data:
@@ -47,12 +31,30 @@ Free and open source (Apache 2.0). Runs on your laptop or your own server; your 
   without refresh or lock; AWS and Kubernetes use list and describe calls with the command's own credentials.
   Right before an approved delete, `git reset --hard` or `git clean` runs, Squidbrake keeps a copy;
   `squidbrake undo` lists them and `squidbrake undo ID` puts one back.
+- **A record someone else can read:** every Monday a short summary of what the
+  agents did and who approved what goes to Slack (when Slack is connected). `squidbrake evidence` (or Reports → Evidence pack) writes one printable page: the
+  controls in place, what was blocked, held and approved and by whom, whether the audit trail is intact, and which
+  SOC 2, ISO/IEC 42001, EU AI Act, CERT-In and RBI requirements those records speak to.
+- **For teams:** one gateway for everyone's laptops (`connect all --url https://gateway.yourcompany.com --key gw_...`, one
+  agent key per person, made in Team with "Works for" set), roles (only `finance` approves wires), **second-person approval** (nobody approves what their
+  own agent asked for), an emergency stop (all agents, one agent, or one conversation, which also ends Claude Code's
+  turn), reports, CSV export, and evidence anyone can verify offline (`python verify.py`).
+- **Works with real agents:** `squidbrake connect all` connects Claude Code, Cursor, Codex, Gemini CLI, VS Code
+  Copilot and Antigravity (their commands, reads and edits, via hooks) and the MCP servers they already use; any MCP
+  app (Stripe, GitHub, Slack, databases, internal tools) can be wrapped too.
 - **Can't be switched off:** `squidbrake lockdown --url https://gateway.yourcompany.com` writes the managed-settings
   files IT pushes to every machine (Claude Code, Codex, Gemini CLI, Cursor), so each agent must run Squidbrake's hook
   and `--dangerously-skip-permissions` / `--yolo` are turned off. One policy, every agent.
-- **Ready for your auditor:** `squidbrake evidence` (or Reports → Evidence pack) writes one printable page: the
-  controls in place, what was blocked, held and approved and by whom, whether the audit trail is intact, and which
-  SOC 2, ISO/IEC 42001, EU AI Act, CERT-In and RBI requirements those records speak to.
+- **Rules, not vibes:** `rules.yaml` says what runs by itself, what's blocked, and what waits for a person.
+  No LLM in the decision path.
+- **Reads what a command really does:** `ls && rm -rf ~/`, `bash -c "..."`, `rmdir /s /q d:\` or `curl ... | sh` are
+  split and read before they run. Wiping a disk or home folder is blocked; `git push --force`, `terraform destroy`,
+  `kubectl delete` or cloud deletes wait for a person; commands that only look (`ls`, `git status`) run without asking.
+- **Catches prompt injection without a model:** if an agent sends data to an address that only a web page, email or
+  issue mentioned (not you, not your own systems), it's held and the approver is told where the address came from.
+- **Judges by history:** blocks a retry of something a person rejected, catches look-alike domains
+  (`acrne-corp.com` pretending to be `acme.com`), flags duplicate refunds, and lets you write sequence rules
+  ("deleting a database right after its backups were turned off") that say which earlier step caused them.
 - **Fails closed:** if Squidbrake is down, guarded tools don't run.
 
 See [SHOWCASE.md](SHOWCASE.md) for a 5-minute demo with a sandbox company, and [incidents/](incidents/) for **10 real

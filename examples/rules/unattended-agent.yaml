@@ -3,15 +3,16 @@
 # tool-name patterns and limits to your agent.
 #
 # Loop specs usually make promises in the prompt: "stop after N steps", "never delete anything",
-# "don't redo work", "report when you stop". A prompt can't enforce any of that. This file does, from
-# outside the agent:
+# "don't redo work". A prompt can't keep them. This file does, from outside the agent, and every run leaves a
+# change record someone can read the next morning (Reports, the weekly summary):
 #
-#   1. Step cap         a stuck or runaway loop is stopped (sequences: runaway-loop, runaway-sends)
-#   2. Allowlist        reads run, a short list of writes runs, everything else is refused (rules + default)
+#   1. What it changed  every action of every run is on the record, with the rule that let it through
+#   2. Its own lane     reads run, a short list of writes runs, everything else is refused and recorded (rules + default)
 #   3. No redo          the same change on the same thing twice is refused, and so is anything a person
 #                       already said no to (history_checks)
-#   4. No destruction   deletes and irreversible commands are refused, not held: nobody is awake to approve
-#   5. Reported         every refusal is recorded with its reason and shows up in Reports and the weekly digest
+#   4. Nothing that needs a person: deletes, money out and irreversible commands are refused, not held,
+#                       because nobody is awake to sign off. Move them to a run someone is watching.
+#   5. Step limit       a stuck or runaway loop is stopped (sequences: runaway-loop, runaway-sends)
 #
 # A token or dollar budget is not something Squidbrake sees; the step cap is the closest stand-in. Keep a
 # spend limit at your model provider too.

@@ -1613,18 +1613,19 @@ async def _expiry_loop():
 
 def digest_text(r: dict) -> str:
     a, s = r["approvals"], r["by_status"]
-    lines = [f":bar_chart: *Squidbrake weekly summary* ({r['days']} days)",
-             f"{r['total']} agent actions: {s.get('completed', 0)} completed, {s.get('denied', 0)} blocked, "
-             f"{s.get('failed', 0)} failed.",
-             f"Approvals: {a['held']} held, {a['approved']} approved, {a['rejected']} rejected, {a['timed_out']} timed out"
-             + (f", median decision time {int(a['median_seconds_to_decide'])}s." if a['median_seconds_to_decide'] is not None else ".")]
+    lines = [f":bar_chart: *What your AI agents did this week* ({r['days']} days)",
+             f"Signed off by a person: {a['held']} held, {a['approved']} approved, {a['rejected']} rejected, "
+             f"{a['timed_out']} timed out"
+             + (f", median decision time {int(a['median_seconds_to_decide'])}s." if a['median_seconds_to_decide'] is not None else "."),
+             f"{r['total']} agent actions on the record: {s.get('completed', 0)} completed, {s.get('denied', 0)} refused, "
+             f"{s.get('failed', 0)} failed."]
     if r["agents"]:
         lines.append("Most active: " + ", ".join(f"{g['agent']} ({g['total']})" for g in r["agents"][:5]))
-    if r["blocked_by_rule"]:
-        lines.append("Top blocks: " + ", ".join(f"{b['rule_id']} ({b['count']})" for b in r["blocked_by_rule"][:3]))
     au = r["audit"]
-    lines.append(f"Audit trail: {'intact' if au['ok'] else 'BROKEN at entry ' + str(au['first_bad_seq'])}, "
+    lines.append(f"Record: {'intact' if au['ok'] else 'BROKEN at entry ' + str(au['first_bad_seq'])}, "
                  f"{au['entries']} entries, fingerprint {str(au['head_hash'])[:16]}")
+    if r["blocked_by_rule"]:
+        lines.append("Most refused by: " + ", ".join(f"{b['rule_id']} ({b['count']})" for b in r["blocked_by_rule"][:3]))
     return "\n".join(lines)
 
 
