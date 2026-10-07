@@ -712,6 +712,8 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
       <p class="hint">The agent signs in with one of its keys (Team, add an AI agent): <code>Authorization: Bearer gw_…</code>.
         If the app only takes a URL, add <code>?key=gw_…</code> to it, and treat that URL like a password.</p>
       <form class="form-grid wide" id="mcpForm">
+        <label class="full">App <select name="app" id="mcpApp"><option value="">Another MCP server (fill in below)</option></select>
+          <span class="hint" id="mcpAppHint">Pick an app and only its token is left to paste.</span></label>
         <label>Name <input name="name" placeholder="github" pattern="[a-z0-9][a-z0-9-]{0,39}" required>
           <span class="hint">Lowercase, used in the URL and in rules, e.g. github.create_issue</span></label>
         <label>The app's MCP server URL <input name="url" placeholder="https://api.githubcopilot.com/mcp/" required></label>
@@ -2184,7 +2186,26 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
   }
 
   // ---------- MCP servers by URL
+  let mcpCatalog = [];
+  async function loadMcpCatalog() {
+    if (mcpCatalog.length) return;
+    try { mcpCatalog = (await api("/v1/mcp-catalog")).apps; } catch { return; }
+    const groups = {};
+    for (const a of mcpCatalog) (groups[a.category] = groups[a.category] || []).push(a);
+    $("#mcpApp").append(...Object.keys(groups).sort().map((cat) => el("optgroup", { label: cat },
+      ...groups[cat].map((a) => el("option", { value: a.id, text: a.name })))));
+  }
+  $("#mcpApp").addEventListener("change", () => {
+    const f = $("#mcpForm"), a = mcpCatalog.find((x) => x.id === f.app.value);
+    if (!a) { $("#mcpAppHint").textContent = "Pick an app and only its token is left to paste."; return; }
+    f.name.value = a.id; f.url.value = a.url; f.hname.value = a.header;
+    f.hvalue.value = ""; f.hvalue.placeholder = a.value.replace("<TOKEN>", "your token");
+    $("#mcpAppHint").replaceChildren(`Token: ${a.token}. Paste it as `, el("code", { text: a.value.replace("<TOKEN>", "…") }), ". ",
+      ...(a.note ? [a.note + " "] : []), el("a", { href: a.source, target: "_blank", rel: "noopener", text: "Docs" }));
+    f.hvalue.focus();
+  });
   async function loadMcp() {
+    loadMcpCatalog();
     let r;
     try { r = await api("/v1/mcp-servers"); } catch { return; }
     $("#mcpList").replaceChildren(...(r.servers.length ? r.servers.map((m) => {

@@ -61,6 +61,7 @@ from sqlalchemy import (
 import commands
 import evidence
 import lockdown
+import mcp_catalog
 import mcp_hub
 import pilot
 import risk
@@ -2430,6 +2431,12 @@ def _mcp_public(name: str, cfg: dict, request: Request) -> dict:
 def list_mcp_servers(request: Request, _: str = Depends(admin)):
     return {"servers": [_mcp_public(n, c, request) for n, c in sorted(mcp_servers().items())],
             "commands_allowed": mcp_hub.COMMANDS_ALLOWED}
+
+
+@app.get("/v1/mcp-catalog")
+def mcp_catalog_list(_: str = Depends(person)):
+    """Apps the dashboard can fill in: their official remote MCP URL and the header their token goes in."""
+    return {"apps": mcp_catalog.public(), "local": mcp_catalog.LOCAL, "oauth_only": mcp_catalog.OAUTH_ONLY}
 
 
 @app.put("/v1/mcp-servers/{name}")

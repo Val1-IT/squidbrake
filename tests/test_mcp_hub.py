@@ -125,3 +125,15 @@ def test_a_proxy_knows_whether_its_gateway_is_alive():
     done = subprocess.Popen([PY, "-c", "pass"])
     done.wait()
     assert not gateway_proxy._alive(done.pid)
+
+
+def test_catalog_entries_are_valid_servers(gw):
+    sys.path.insert(0, str(ROOT))
+    import mcp_catalog
+    import mcp_hub
+    for app_id, a in mcp_catalog.CATALOG.items():
+        assert "<TOKEN>" in a["value"] and a["source"].startswith("https://"), app_id
+        mcp_hub.check(app_id, {"url": a["url"], "headers": {a["header"]: a["value"].replace("<TOKEN>", "t")}})
+    r = httpx.get(f"{gw['url']}/v1/mcp-catalog", headers=gw["admin"]).json()
+    assert {a["id"] for a in r["apps"]} >= {"github", "stripe", "linear", "zapier"} and "Slack" in r["oauth_only"]
+    assert httpx.get(f"{gw['url']}/v1/mcp-catalog", headers={"X-Gateway-Key": gw["agent"]}).status_code == 403
