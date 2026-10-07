@@ -85,8 +85,14 @@ CATALOG: dict[str, dict] = {
     "monday": {
         "name": "monday.com", "category": "Project management", "url": "https://mcp.monday.com/mcp",
         "header": "Authorization", "value": "Bearer <TOKEN>",
-        "token": "monday.com → Developers → My access tokens",
+        "token": "monday.com → your profile picture → Developers → My access tokens",
         "source": "https://github.com/mondaycom/mcp",
+    },
+    "airtable": {
+        "name": "Airtable", "category": "Database", "url": "https://mcp.airtable.com/mcp",
+        "header": "Authorization", "value": "Bearer <TOKEN>",
+        "token": "airtable.com/create/tokens (a personal access token)",
+        "source": "https://airtable.com/developers/agents/mcp/getting-started",
     },
     "pagerduty": {
         "name": "PagerDuty", "category": "Observability", "url": "https://mcp.pagerduty.com/mcp",
@@ -103,8 +109,8 @@ CATALOG: dict[str, dict] = {
     },
     "exa": {
         "name": "Exa", "category": "Search", "url": "https://mcp.exa.ai/mcp",
-        "header": "Authorization", "value": "Bearer <TOKEN>",
-        "token": "Exa dashboard → API keys",
+        "header": "x-api-key", "value": "<TOKEN>",
+        "token": "dashboard.exa.ai → API keys",
         "source": "https://exa.ai/docs/reference/exa-mcp",
     },
     "firecrawl": {
