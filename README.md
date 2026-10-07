@@ -211,6 +211,11 @@ needs). The agent then uses `https://<your gateway>/mcp/<name>` and signs in wit
 that agent; the app's own token stays on the gateway and is never shown again. Hosted dashboards take servers by URL;
 servers started by a command need a self-hosted gateway with `SQUIDBRAKE_MCP_COMMANDS=1`.
 
+Apps whose MCP server signs in only through a browser (OAuth: Slack, HubSpot, Notion, Asana, ClickUp, Grafana Cloud):
+choose **Sign in to the app (OAuth)**, add it, click **Connect** and sign in once. The gateway keeps the session and
+refreshes it before it runs out. Apps that only let in OAuth apps registered with them (Slack, HubSpot) need your own
+OAuth app's client ID and secret, with the redirect URL the dashboard shows.
+
 Or run the proxy yourself and serve it over HTTP. The agent adds `https://your-host:9000/mcp` as its MCP server and sends the token
 (`Authorization: Bearer`, `X-Squidbrake-Token`, or `?token=` for clients that take only a URL):
 
@@ -312,6 +317,19 @@ outside content but not in what you asked or in your own systems' results, it's 
 Uploads from the shell count too (`curl -d @.env https://...`, `scp`, `git push`). Anything sent out after outside
 content was read gets a warning for the approver. Configure it under `taint_checks:` in `rules.yaml`.
 
+## Customer names and personal data in public places
+
+Agents copy what they read: a ticket's customer ends up in a pull request description or a public issue. When an
+agent puts text where other people read it (a PR, an issue or comment, a gist, a chat post, a page, and
+`gh pr|issue|gist ... create|comment|edit`), it waits for a person if the text:
+
+- names a customer on your list (dashboard → **Settings → Customers**), or
+- carries personal data: a card number, a social security number, an IBAN, or a list of 3+ emails or phone numbers.
+
+Looking things up (`list_issues`, `search_issues`) doesn't count, and email has its own rule. The approver sees which
+customer it named, or which kind of data; the data itself isn't repeated. Configure it under `data_checks:` in
+`rules.yaml` (`block`, `review`, `warn`, `off`).
+
 ## Sequence rules
 
 Some actions are only dangerous because of what came before them. `sequences:` in `rules.yaml` judges an action by
@@ -363,6 +381,10 @@ Rules with `action: review` hold the call until a person approves or rejects it:
 - Every decision is stored on the event with who decided, when, and their note.
 - Set `APPROVAL_WEBHOOK_URL` (plus `PUBLIC_URL`) to get a Slack- or Discord-formatted message with a link to the event
   whenever something needs approval.
+- **Approve and Reject right in Slack:** in Settings, open *Approve and Reject right in Slack*, create the Slack app
+  from the manifest shown there, install it to your approvals channel, and paste its webhook URL and signing secret.
+  Each click is checked against the signing secret and carries that one event's signed token; the message then says
+  who decided.
 - Through the HTTP proxy, a held request stays open until it's decided, so the caller's HTTP
   timeout must be longer than the rule's `timeout_seconds`.
 

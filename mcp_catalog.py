@@ -1,8 +1,7 @@
 """
-Remote MCP servers the dashboard can fill in for you (Settings → Agents that connect by URL): pick the app, paste its
-token, done. Only servers whose official docs give a remote endpoint that takes a token in a header are listed, since
-the gateway sends fixed headers and can't sign in through a browser (OAuth-only servers, like Notion's and Slack's
-hosted ones, aren't here). Each entry says where its details come from; checked 7 Oct 2026.
+Remote MCP servers the dashboard can fill in for you (Settings → Agents that connect by URL): pick the app, then paste
+its token (CATALOG) or click Connect and sign in to it (OAUTH). Each entry says where its details come from; checked
+7 Oct 2026.
 
 Fields: name, category, url, header (name), value (what goes in it, with <TOKEN> where the token goes),
 token (where to get it), note (anything a person must know), source.
@@ -121,14 +120,32 @@ CATALOG: dict[str, dict] = {
     },
 }
 
+OWN_APP = ("needs your own OAuth app in it: create one, add the redirect URL shown here, and paste its client ID and "
+           "secret")
+# Hosted servers that sign in only through a browser (OAuth): Connect in the dashboard signs in once, and the gateway
+# keeps the session fresh (mcp_oauth.py). Some apps only let in OAuth apps registered with them first.
+OAUTH = {
+    "slack": {"name": "Slack", "category": "Chat", "url": "https://mcp.slack.com/mcp", "auth": "oauth",
+              "note": f"Slack {OWN_APP} (api.slack.com/apps).", "own_app": True,
+              "source": "https://docs.slack.dev/ai/mcp-server/"},
+    "hubspot": {"name": "HubSpot", "category": "Support", "url": "https://mcp.hubspot.com", "auth": "oauth",
+                "note": f"HubSpot {OWN_APP} (a user-level app in your HubSpot developer account).", "own_app": True,
+                "source": "https://developers.hubspot.com/mcp"},
+    "notion": {"name": "Notion", "category": "Docs", "url": "https://mcp.notion.com/mcp", "auth": "oauth",
+               "source": "https://developers.notion.com/docs/get-started-with-mcp"},
+    "asana": {"name": "Asana", "category": "Project management", "url": "https://mcp.asana.com/v2/mcp", "auth": "oauth",
+              "source": "https://developers.asana.com/docs/using-asanas-mcp-server"},
+    "clickup": {"name": "ClickUp", "category": "Project management", "url": "https://mcp.clickup.com/mcp", "auth": "oauth",
+                "source": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server"},
+    "grafana": {"name": "Grafana Cloud", "category": "Observability", "url": "https://mcp.grafana.com/mcp", "auth": "oauth",
+                "source": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/"},
+}
+
 # Official servers that run locally with a token (a laptop's agents via `squidbrake connect guard` / `proxy`, or a
-# self-hosted gateway with SQUIDBRAKE_MCP_COMMANDS=1), and hosted ones that sign in only through a browser (OAuth),
-# which the gateway can't do for you yet. Listed so people know where each stands.
-LOCAL = ["Notion", "Square", "PayPal", "MongoDB", "Grafana", "Postgres", "Filesystem", "Playwright", "Brave Search",
-         "Twilio"]
-OAUTH_ONLY = ["Slack", "Notion (hosted)", "HubSpot", "Asana", "Vercel", "Figma", "ClickUp", "Google Workspace",
-              "Salesforce (hosted)"]
+# self-hosted gateway with SQUIDBRAKE_MCP_COMMANDS=1), and hosted ones that only let in clients they approved first.
+LOCAL = ["Square", "PayPal", "MongoDB", "Postgres", "Filesystem", "Playwright", "Brave Search", "Twilio"]
+APPROVED_CLIENTS_ONLY = ["Vercel", "Figma", "Google Workspace", "Salesforce (hosted)"]
 
 
 def public() -> list[dict]:
-    return [{"id": k, **v} for k, v in CATALOG.items()]
+    return [{"id": k, "auth": "header", **v} for k, v in CATALOG.items()] + [{"id": k, **v} for k, v in OAUTH.items()]

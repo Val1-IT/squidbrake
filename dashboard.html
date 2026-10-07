@@ -748,9 +748,18 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
         <label>Name <input name="name" placeholder="github" pattern="[a-z0-9][a-z0-9-]{0,39}" required>
           <span class="hint">Lowercase, used in the URL and in rules, e.g. github.create_issue</span></label>
         <label>The app's MCP server URL <input name="url" placeholder="https://api.githubcopilot.com/mcp/" required></label>
-        <label>Header it needs (optional) <input name="hname" placeholder="Authorization"></label>
-        <label>Header value <input name="hvalue" type="password" placeholder="Bearer ghp_…" autocomplete="off">
+        <label>How it signs in <select name="auth" id="mcpAuth">
+            <option value="header">A token in a header</option>
+            <option value="oauth">Sign in to the app (OAuth)</option></select></label>
+        <label data-auth="header">Header it needs (optional) <input name="hname" placeholder="Authorization"></label>
+        <label data-auth="header">Header value <input name="hvalue" type="password" placeholder="Bearer ghp_…" autocomplete="off">
           <span class="hint">Kept on this gateway and never shown again.</span></label>
+        <p class="hint full" data-auth="oauth" hidden>After adding it, click <b>Connect</b> and sign in to the app. Redirect URL, if the
+          app asks for one: <code id="mcpRedirect"></code></p>
+        <label data-auth="oauth" hidden>Your OAuth app's client ID (optional) <input name="client_id" autocomplete="off"
+          placeholder="only if the app needs its own OAuth app"></label>
+        <label data-auth="oauth" hidden>Client secret <input name="client_secret" type="password" autocomplete="off"></label>
+        <label data-auth="oauth" hidden>Scopes (optional) <input name="scope" placeholder="as the app's docs list them"></label>
         <div class="form-actions full"><button class="btn primary" type="submit">Add server</button>
           <span class="hint" id="mcpMsg"></span></div>
       </form>
@@ -2231,9 +2240,17 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
 
   // ---------- MCP servers by URL
   let mcpCatalog = [];
+  function showAuth(kind) {
+    $("#mcpForm").auth.value = kind;
+    document.querySelectorAll("#mcpForm [data-auth]").forEach((n) => { n.hidden = n.dataset.auth !== kind; });
+  }
+  $("#mcpAuth").addEventListener("change", (e) => showAuth(e.target.value));
   async function loadMcpCatalog() {
     if (mcpCatalog.length) return;
-    try { mcpCatalog = (await api("/v1/mcp-catalog")).apps; } catch { return; }
+    let r;
+    try { r = await api("/v1/mcp-catalog"); } catch { return; }
+    mcpCatalog = r.apps;
+    $("#mcpRedirect").textContent = r.redirect_uri.includes("<") ? location.origin + "/v1/mcp-oauth/callback" : r.redirect_uri;
     const groups = {};
     for (const a of mcpCatalog) (groups[a.category] = groups[a.category] || []).push(a);
     $("#mcpApp").append(...Object.keys(groups).sort().map((cat) => el("optgroup", { label: cat },
@@ -2242,12 +2259,35 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
   $("#mcpApp").addEventListener("change", () => {
     const f = $("#mcpForm"), a = mcpCatalog.find((x) => x.id === f.app.value);
     if (!a) { $("#mcpAppHint").textContent = "Pick an app and only its token is left to paste."; return; }
-    f.name.value = a.id; f.url.value = a.url; f.hname.value = a.header;
-    f.hvalue.value = ""; f.hvalue.placeholder = a.value.replace("<TOKEN>", "your token");
+    f.name.value = a.id; f.url.value = a.url;
+    const docs = el("a", { href: a.source, target: "_blank", rel: "noopener", text: "Docs" });
+    if (a.auth === "oauth") {
+      showAuth("oauth");
+      $("#mcpAppHint").replaceChildren("Add it, then click Connect and sign in to ", a.name, ". ",
+        ...(a.note ? [a.note + " "] : []), docs);
+      (a.own_app ? f.client_id : f.querySelector("button[type=submit]")).focus();
+      return;
+    }
+    showAuth("header");
+    f.hname.value = a.header; f.hvalue.value = ""; f.hvalue.placeholder = a.value.replace("<TOKEN>", "your token");
     $("#mcpAppHint").replaceChildren(`Token: ${a.token}. Paste it as `, el("code", { text: a.value.replace("<TOKEN>", "…") }), ". ",
-      ...(a.note ? [a.note + " "] : []), el("a", { href: a.source, target: "_blank", rel: "noopener", text: "Docs" }));
+      ...(a.note ? [a.note + " "] : []), docs);
     f.hvalue.focus();
   });
+  async function connectMcp(name, btn) {
+    btn.disabled = true; btn.textContent = "Starting…";
+    try {
+      const r = await apiSend("POST", `/v1/mcp-servers/${encodeURIComponent(name)}/connect`);
+      if (r.authorize_url) window.open(r.authorize_url, "_blank", "noopener");
+      btn.textContent = "Waiting for sign-in…";
+      for (let i = 0; i < 180; i++) {                    // up to 6 minutes for the person to sign in
+        await new Promise((res) => setTimeout(res, 2000));
+        const m = (await api("/v1/mcp-servers")).servers.find((s) => s.name === name);
+        if (m && (m.connected && String(m.sign_in || "").startsWith("connected") || String(m.sign_in || "").startsWith("sign-in failed"))) break;
+      }
+    } catch (err) { toast(err.message); }
+    loadMcp();
+  }
   async function loadMcp() {
     loadMcpCatalog();
     let r;
@@ -2258,20 +2298,31 @@ dialog input#stopReason { width: 100%; border: 1px solid var(--border); backgrou
         if (!confirm(`Remove ${m.name}? Agents using its URL stop reaching the app.`)) return;
         try { await apiSend("DELETE", `/v1/mcp-servers/${encodeURIComponent(m.name)}`); loadMcp(); } catch (err) { toast(err.message); }
       } });
+      const status = m.auth === "oauth"
+        ? el("td", {}, el("span", { text: m.connected ? "signed in" : "not signed in yet" }),
+            ...(m.sign_in && !String(m.sign_in).startsWith("connected") ? [el("div", { class: "sub", text: m.sign_in })] : []), " ",
+            el("button", { class: "btn", type: "button", text: m.connected ? "Reconnect" : "Connect",
+                           onclick: (e) => connectMcp(m.name, e.target) }))
+        : el("td", { text: m.running ? "running" : "starts on first use" });
       return el("tr", {}, el("td", {}, el("b", { text: m.name })),
         el("td", {}, el("code", { text: m.endpoint }), " ", copyBtn),
-        el("td", { class: "sub", text: (m.url || m.command || "") + (m.headers.length ? ` (+ ${m.headers.join(", ")})` : "") }),
-        el("td", { text: m.running ? "running" : "starts on first use" }), el("td", {}, del));
+        el("td", { class: "sub", text: (m.url || m.command || "") + (m.headers.length ? ` (+ ${m.headers.join(", ")})` : "")
+                                      + (m.auth === "oauth" ? ` (OAuth${m.own_app ? ", your app" : ""})` : "") }),
+        status, el("td", {}, del));
     }) : [el("tr", {}, el("td", { colspan: 5, class: "sub", text: "None yet. Add one below." }))]));
   }
   $("#mcpForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const f = ev.target, headers = {};
-    if (f.hname.value.trim() && f.hvalue.value) headers[f.hname.value.trim()] = f.hvalue.value;
+    const f = ev.target, headers = {}, oauth = f.auth.value === "oauth";
+    if (!oauth && f.hname.value.trim() && f.hvalue.value) headers[f.hname.value.trim()] = f.hvalue.value;
+    const body = oauth ? { url: f.url.value.trim(), auth: "oauth", client_id: f.client_id.value.trim() || null,
+                           client_secret: f.client_secret.value || null, scope: f.scope.value.trim() || null }
+                       : { url: f.url.value.trim(), headers };
     try {
-      const m = await apiSend("PUT", `/v1/mcp-servers/${encodeURIComponent(f.name.value.trim())}`, { url: f.url.value.trim(), headers });
-      $("#mcpMsg").textContent = `Added. Give your agent ${m.endpoint}`;
-      f.reset(); loadMcp();
+      const m = await apiSend("PUT", `/v1/mcp-servers/${encodeURIComponent(f.name.value.trim())}`, body);
+      $("#mcpMsg").textContent = oauth ? `Added. Now click Connect next to ${m.name} and sign in.`
+                                       : `Added. Give your agent ${m.endpoint}`;
+      f.reset(); showAuth("header"); loadMcp();
     } catch (err) { $("#mcpMsg").textContent = err.message; }
   });
   $("#useOrigin").addEventListener("click", () => { sForm.public_url.value = location.origin; });

@@ -135,5 +135,8 @@ def test_catalog_entries_are_valid_servers(gw):
         assert "<TOKEN>" in a["value"] and a["source"].startswith("https://"), app_id
         mcp_hub.check(app_id, {"url": a["url"], "headers": {a["header"]: a["value"].replace("<TOKEN>", "t")}})
     r = httpx.get(f"{gw['url']}/v1/mcp-catalog", headers=gw["admin"]).json()
-    assert {a["id"] for a in r["apps"]} >= {"github", "stripe", "linear", "zapier"} and "Slack" in r["oauth_only"]
+    assert {a["id"] for a in r["apps"]} >= {"github", "stripe", "linear", "zapier", "slack", "notion"}
+    assert next(a for a in r["apps"] if a["id"] == "slack")["auth"] == "oauth" and "Vercel" in r["approved_clients_only"]
+    for app_id, a in mcp_catalog.OAUTH.items():
+        mcp_hub.check(app_id, {"url": a["url"], "auth": "oauth"})
     assert httpx.get(f"{gw['url']}/v1/mcp-catalog", headers={"X-Gateway-Key": gw["agent"]}).status_code == 403

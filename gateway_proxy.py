@@ -158,7 +158,7 @@ async def call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolR
 
 def upstream_target(args):
     if args.url:
-        if not args.header:
+        if not args.header and not args.oauth_store:
             return args.url
         # a remote server that needs its own auth (Authorization: Bearer ...): ${VARS} come from the environment,
         # so the secret can stay in the MCP config's env instead of its arguments
@@ -167,7 +167,12 @@ def upstream_target(args):
         for h in args.header:
             k, _, v = h.partition(":")
             headers[k.strip()] = os.path.expandvars(v.strip())
-        return streamable_http_client(args.url, http_client=create_mcp_http_client(headers=headers))
+        auth = None
+        if args.oauth_store:     # signed in through the dashboard (mcp_oauth.py): use the tokens, refresh them in time
+            import mcp_oauth
+            auth = mcp_oauth.provider(args.url, mcp_oauth.FileTokenStorage(args.oauth_store),
+                                      redirect_uri=os.getenv("SQUIDBRAKE_OAUTH_REDIRECT", "http://localhost/unused"))
+        return streamable_http_client(args.url, http_client=create_mcp_http_client(headers=headers or None, auth=auth))
     if not args.command:
         sys.exit("give the app's MCP command after --, or --url for a remote server")
     return StdioServerParameters(command=args.command[0], args=args.command[1:], env=dict(os.environ))
@@ -286,6 +291,9 @@ def main() -> None:
     p.add_argument("--header", action="append", default=[], metavar="'NAME: VALUE'",
                    help="with --url: a header the remote server needs, e.g. 'Authorization: Bearer ${GITHUB_TOKEN}' "
                         "(${VARS} are read from the environment); repeatable")
+    p.add_argument("--oauth-store", metavar="FILE",
+                   help="with --url: sign in with the OAuth tokens in FILE (written by the dashboard's Connect, "
+                        "mcp_oauth.py) and refresh them as they run out")
     p.add_argument("--serve", metavar="HOST:PORT",
                    help="serve over HTTP instead of stdio, for agents that connect by URL (ChatGPT, claude.ai, Devin, "
                         "n8n...), e.g. --serve 0.0.0.0:9000")

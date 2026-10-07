@@ -44,6 +44,7 @@ import uuid
 import webbrowser
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Literal
 
@@ -63,6 +64,7 @@ import evidence
 import lockdown
 import mcp_catalog
 import mcp_hub
+import mcp_oauth
 import outbound
 import pilot
 import risk
@@ -2543,6 +2545,10 @@ def mcp_servers() -> dict[str, dict]:
 class McpServerIn(BaseModel):
     url: str | None = Field(None, max_length=2000)
     headers: dict[str, str] | None = None
+    auth: Literal["header", "oauth"] | None = None
+    client_id: str | None = Field(None, max_length=300)
+    client_secret: str | None = Field(None, max_length=500)
+    scope: str | None = Field(None, max_length=1000)
     command: str | None = Field(None, max_length=500)
     args: list[str] | None = None
     env: dict[str, str] | None = None
@@ -2550,9 +2556,13 @@ class McpServerIn(BaseModel):
 
 def _mcp_public(name: str, cfg: dict, request: Request) -> dict:
     base = (settings().get("public_url") or str(request.base_url)).rstrip("/")
+    oauth = cfg.get("auth") == "oauth"
     return {"name": name, "endpoint": f"{base}/mcp/{name}", "running": hub.running(name),
             "url": cfg.get("url"), "command": " ".join([cfg["command"], *cfg.get("args", [])]) if cfg.get("command") else None,
-            "headers": sorted(cfg.get("headers") or {})}           # names only: the values are secrets
+            "headers": sorted(cfg.get("headers") or {}),            # names only: the values are secrets
+            "auth": "oauth" if oauth else "header", "own_app": bool(cfg.get("client_id")),
+            "connected": mcp_oauth.FileTokenStorage(hub.oauth_path(name)).connected() if oauth else None,
+            "sign_in": _oauth_status.get(name)}
 
 
 @app.get("/v1/mcp-servers")
@@ -2564,7 +2574,9 @@ def list_mcp_servers(request: Request, _: str = Depends(admin)):
 @app.get("/v1/mcp-catalog")
 def mcp_catalog_list(_: str = Depends(person)):
     """Apps the dashboard can fill in: their official remote MCP URL and the header their token goes in."""
-    return {"apps": mcp_catalog.public(), "local": mcp_catalog.LOCAL, "oauth_only": mcp_catalog.OAUTH_ONLY}
+    return {"apps": mcp_catalog.public(), "local": mcp_catalog.LOCAL,
+            "approved_clients_only": mcp_catalog.APPROVED_CLIENTS_ONLY,
+            "redirect_uri": f"{(settings().get('public_url') or '').rstrip('/') or '<this gateway>'}/v1/mcp-oauth/callback"}
 
 
 @app.put("/v1/mcp-servers/{name}")
@@ -2581,11 +2593,96 @@ def put_mcp_server(name: str, body: McpServerIn, request: Request, who: str = De
     return _mcp_public(name, cfg, request)
 
 
+_oauth_flows: dict[str, asyncio.Future] = {}   # sign-in state -> where the app's redirect delivers the code
+_oauth_status: dict[str, str] = {}             # name -> what the last sign-in did, for the dashboard
+
+
+def _oauth_redirect(request: Request) -> str:
+    base = (settings().get("public_url") or str(request.base_url)).rstrip("/")
+    return f"{base}/v1/mcp-oauth/callback"
+
+
+@app.post("/v1/mcp-servers/{name}/connect")
+async def connect_mcp_server(name: str, request: Request, who: str = Depends(admin)):
+    """Start signing in to an app's MCP server (OAuth). Returns the app's sign-in page to open; the app sends the
+    browser back to /v1/mcp-oauth/callback, and the proxy then uses (and refreshes) the tokens."""
+    servers = mcp_servers()
+    cfg = servers.get(name)
+    if not cfg or cfg.get("auth") != "oauth":
+        raise HTTPException(404, f"'{name}' isn't an MCP server that signs in with OAuth")
+    from mcp import Client
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+    from mcp.shared.auth import AuthorizationCodeResult
+    from urllib.parse import parse_qs, urlsplit
+    storage = mcp_oauth.FileTokenStorage(hub.oauth_path(name))
+    storage.forget()                                     # a fresh sign-in, with nothing left over
+    redirect = _oauth_redirect(request)
+    if cfg.get("client_id"):
+        await mcp_oauth.use_own_app(storage, redirect, cfg["client_id"], cfg.get("client_secret"), cfg.get("scope"))
+    loop = asyncio.get_running_loop()
+    sign_in_page: asyncio.Future = loop.create_future()
+    code: asyncio.Future = loop.create_future()
+
+    async def open_page(url: str) -> None:
+        state = (parse_qs(urlsplit(url).query).get("state") or [""])[0]
+        _oauth_flows[state] = code
+        if not sign_in_page.done():
+            sign_in_page.set_result(url)
+
+    async def wait_for_code() -> AuthorizationCodeResult:
+        return await asyncio.wait_for(code, 900)
+
+    auth = mcp_oauth.provider(cfg["url"], storage, redirect, cfg.get("scope"), bool(cfg.get("client_secret")),
+                              redirect_handler=open_page, callback_handler=wait_for_code)
+
+    async def sign_in() -> None:
+        try:
+            async with Client(streamable_http_client(cfg["url"], http_client=create_mcp_http_client(auth=auth))) as c:
+                tools = (await c.list_tools()).tools
+            _oauth_status[name] = f"connected, {len(tools)} tools"
+            await run_in_threadpool(hub.restart, name, mcp_servers())
+            with audited_tx() as conn:
+                audit(conn, who, "mcp_server.connected", name)
+        except BaseException as e:   # noqa: BLE001  (the flow's errors are the person's to read)
+            _oauth_status[name] = f"sign-in failed: {type(e).__name__}: {str(e)[:200]}"
+            if not sign_in_page.done():
+                sign_in_page.set_exception(RuntimeError(_oauth_status[name]))
+        if not sign_in_page.done():
+            sign_in_page.set_result("")                  # already signed in, no page needed
+
+    _oauth_status[name] = "waiting for sign-in"
+    asyncio.create_task(sign_in())
+    try:
+        url = await asyncio.wait_for(asyncio.shield(sign_in_page), 30)
+    except Exception as e:
+        raise HTTPException(502, f"couldn't start signing in to {cfg['url']}: {e}")
+    return {"authorize_url": url or None, "status": _oauth_status.get(name), "redirect_uri": redirect}
+
+
+@app.get("/v1/mcp-oauth/callback")
+async def mcp_oauth_callback(request: Request):
+    """Where an app sends the browser back after sign-in. The state ties it to one sign-in started by an admin."""
+    from fastapi.responses import HTMLResponse
+    from mcp.shared.auth import AuthorizationCodeResult
+    q = request.query_params
+    fut = _oauth_flows.pop(q.get("state", ""), None)
+    if fut is None or fut.done():
+        return HTMLResponse("<p>This sign-in link is no longer valid. Start again from Squidbrake's Settings.</p>", 400)
+    if q.get("error"):
+        fut.set_exception(RuntimeError(f"the app said: {q.get('error')} {q.get('error_description', '')}".strip()))
+        return HTMLResponse(f"<p>Sign-in didn't go through ({html_escape(q.get('error'))}). You can close this tab.</p>", 400)
+    fut.set_result(AuthorizationCodeResult(code=q.get("code", ""), state=q.get("state"), iss=q.get("iss")))
+    return HTMLResponse("<!doctype html><meta charset=utf-8><title>Connected</title><body style='font-family:system-ui;"
+                        "padding:40px'><h2>Signed in.</h2><p>Squidbrake is connecting to the app now. You can close this "
+                        "tab and go back to Settings.</p>")
+
+
 @app.delete("/v1/mcp-servers/{name}")
 def delete_mcp_server(name: str, who: str = Depends(admin)):
     servers = mcp_servers()
     if servers.pop(name, None) is None:
         raise HTTPException(404, f"no MCP server named '{name}'")
+    mcp_oauth.FileTokenStorage(hub.oauth_path(name)).forget()
     with audited_tx() as conn:
         state_set(conn, "mcp_servers", servers)
         audit(conn, who, "mcp_server.removed", name)

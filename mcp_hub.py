@@ -7,8 +7,9 @@ then runs one `gateway_proxy.py --serve` for it on 127.0.0.1, and /mcp/<name> pa
 caller's own agent key. So every call is checked, held or blocked like any other, and recorded as the agent that made
 it. Nothing but the gateway can reach those proxies (a random token, local address only).
 
-Hosted dashboards take remote MCP servers (a URL, plus the headers its auth needs). Servers started by a command are
-for self-hosted gateways only: set SQUIDBRAKE_MCP_COMMANDS=1.
+Hosted dashboards take remote MCP servers: a URL, plus the headers its auth needs, or a browser sign-in (OAuth, see
+mcp_oauth.py) for servers that take nothing else. Servers started by a command are for self-hosted gateways only:
+set SQUIDBRAKE_MCP_COMMANDS=1.
 """
 from __future__ import annotations
 
@@ -34,6 +35,19 @@ def check(name: str, cfg: dict) -> dict:
     if not NAME_RE.match(name or ""):
         raise ValueError("name: lowercase letters, digits and '-', up to 40, e.g. 'github'")
     url, command = (cfg.get("url") or "").strip(), cfg.get("command")
+    if url and cfg.get("auth") == "oauth":
+        if not re.match(r"^https?://", url):
+            raise ValueError("url must start with https:// (or http://)")
+        out = {"url": url, "auth": "oauth"}
+        for k, limit in (("client_id", 300), ("client_secret", 500), ("scope", 1000)):
+            v = (cfg.get(k) or "").strip()
+            if len(v) > limit or "\n" in v:
+                raise ValueError(f"{k} is too long")
+            if v:
+                out[k] = v
+        if "client_secret" in out and "client_id" not in out:
+            raise ValueError("a client secret needs its client ID")
+        return out
     if url:
         if not re.match(r"^https?://", url):
             raise ValueError("url must start with https:// (or http://)")
@@ -78,7 +92,9 @@ class Hub:
                "SQUIDBRAKE_PROXY_TOKEN": self.token, "GATEWAY_PENDING_DIR": str(self.data_dir / "mcp-pending" / name),
                "DO_NOT_TRACK": "1", "SQUIDBRAKE_PARENT_PID": str(os.getpid())}   # it stops when the gateway does
         cmd = [sys.executable, str(HERE / "gateway_proxy.py"), "--app", name, "--serve", f"127.0.0.1:{port}"]
-        if "url" in cfg:
+        if cfg.get("auth") == "oauth":
+            cmd += ["--url", cfg["url"], "--oauth-store", str(self.oauth_path(name))]
+        elif "url" in cfg:
             cmd += ["--url", cfg["url"]]
             for i, (k, v) in enumerate(cfg["headers"].items()):
                 env[f"SB_MCP_HEADER_{i}"] = v      # secrets ride in the environment, not the arguments (expanded once)
@@ -128,6 +144,16 @@ class Hub:
             self.sync(servers)
             running = self._procs.get(name)
         return running[1] if running else None
+
+    def oauth_path(self, name: str) -> Path:
+        return self.data_dir / "mcp-oauth" / f"{name}.json"
+
+    def restart(self, name: str, servers: dict[str, dict]) -> None:
+        """Start `name`'s proxy again (after a sign-in, so it picks up the new tokens)."""
+        with self._lock:
+            if name in self._procs:
+                self._stop(name)
+        self.sync(servers)
 
     def running(self, name: str) -> bool:
         r = self._procs.get(name)
