@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -37,6 +38,9 @@ CONTACT = os.getenv("INSIGHTS_CONTACT", "")           # shown on start pages, e.
 CODE_RE = re.compile(r"^[a-z0-9-]{3,40}$")
 
 app = FastAPI(title="Squidbrake Insights", docs_url=None, redoc_url=None)
+# squidbrake.com is a static site: its "Book a demo" form posts here (/v1/team-request), from the browser
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"https://([a-z0-9-]+\.)?(squidbrake\.com|onrender\.com)",
+                   allow_methods=["POST"], allow_headers=["Content-Type"])
 _lock = threading.Lock()
 
 

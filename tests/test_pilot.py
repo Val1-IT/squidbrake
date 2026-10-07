@@ -316,3 +316,13 @@ def test_traction_metrics(insights, tmp_path, monkeypatch):
     assert v["oss"]["downloads_last_week"] == 1355
     insights.post(f"/v1/admin/pilots/{code}/revenue", headers=admin, json={"mrr": 0})
     assert not any(p["company"] == "Investable" for p in insights.get("/v1/admin/traction", headers=admin).json()["paying"])
+
+
+def test_the_website_form_may_post_here_other_sites_may_not(insights):
+    """squidbrake.com is a static site; its demo form posts to /v1/team-request from the browser."""
+    ask = lambda origin: insights.options("/v1/team-request", headers={
+        "Origin": origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
+    for ok in ("https://squidbrake.com", "https://www.squidbrake.com", "https://squidbrake-site.onrender.com"):
+        assert ask(ok).headers.get("access-control-allow-origin") == ok, ok
+    for bad in ("https://evil.example", "https://squidbrake.com.evil.example", "http://squidbrake.com"):
+        assert "access-control-allow-origin" not in ask(bad).headers, bad
