@@ -730,6 +730,16 @@ def test_unedited_rules_from_an_older_release_are_updated(tmp_path):
     assert server.update_unedited_rules(mine, shipped, fake_known) is False and b"my own rule" in mine.read_bytes()
 
 
+def test_antigravity_housekeeping_runs_on_its_own():
+    """Antigravity checks its own background tasks and commands all the time: holding those for a person stalls it."""
+    p = server.Policy(Path(__file__).resolve().parents[1] / "rules.yaml")
+    decide = lambda name, inp: p.evaluate(kind="agent_hook", name=name, source="antigravity", client="k",
+                                          session_id=None, input=inp)[0]
+    for name in ("manage_task", "command_status", "task_boundary", "notify_user", "read_terminal", "read_url_content"):
+        assert decide(name, {"Action": "status", "TaskId": "c/task-81"}) == "allow", name
+    assert decide("send_command_input", {"CommandId": "c1", "Input": "y"}) == "review"
+
+
 def test_slack_example_policy():
     rules = Path(__file__).resolve().parents[1] / "examples" / "rules" / "slack.yaml"
     p = server.Policy(rules)

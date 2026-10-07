@@ -155,7 +155,10 @@ rules:
              # Claude Code's own read-only / housekeeping tools
              "Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "NotebookRead", "ToolSearch", "TodoWrite",
              "Task", "Agent", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Skill", "BashOutput", "TaskOutput",
-             "ListMcpResourcesTool", "ReadMcpResourceTool"]
+             "ListMcpResourcesTool", "ReadMcpResourceTool",
+             # Antigravity's own read-only / housekeeping tools (its file reads, edits and commands are checked above)
+             "read_url_content", "view_content_chunk", "read_resource", "read_terminal", "command_status",
+             "manage_task", "task_boundary", "notify_user"]
 
   # ---- changes: a person decides (these give the approver a clearer reason than the default)
   - id: approve-money-out
