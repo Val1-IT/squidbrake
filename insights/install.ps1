@@ -61,7 +61,10 @@ try {
         if (-not $uv) {
             Write-Host "Installing uv (Astral's Python installer), which brings its own Python..."
             $env:UV_NO_MODIFY_PATH = "1"; $env:UV_INSTALL_DIR = $bin
-            try { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression *> $null } catch { }
+            # In its own PowerShell: uv's installer ends with 'exit 1' on any error (e.g. the default Restricted
+            # execution policy), and run here with Invoke-Expression that 'exit' would close the founder's window.
+            $ps = (Get-Process -Id $PID).Path
+            & $ps -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" *> $null
             if (Test-Path (Join-Path $bin "uv.exe")) { $uv = Join-Path $bin "uv.exe" }
             if (-not $uv) { Fail "Couldn't install uv. Install Python 3.10+ from https://www.python.org/downloads/ (tick 'Add python.exe to PATH') and run this again." }
         }
