@@ -63,6 +63,7 @@ import evidence
 import lockdown
 import mcp_catalog
 import mcp_hub
+import outbound
 import pilot
 import risk
 import taint
@@ -617,6 +618,11 @@ TAINT_DEFAULTS = {
     "after_untrusted": "warn",          # sends anything out after untrusted content was read in this conversation
 }
 
+# Data checks (rules.yaml `data_checks:`): text an action puts where others read it (a PR, an issue, a comment, a chat
+# post) that names a customer on the team's list, or carries personal data. See outbound.py.
+DATA_EFFECT_KEYS = ("customer_names", "personal_data")
+DATA_DEFAULTS = {"customer_names": "review", "personal_data": "review", "where": outbound.DEFAULT_WHERE}
+
 # Command checks (rules.yaml `command_checks:`) read what a shell command actually does (see commands.py).
 COMMAND_EFFECT_KEYS = ("catastrophic", "irreversible", "hidden")
 COMMAND_DEFAULTS = {
@@ -730,6 +736,7 @@ class Policy:
         self.history: dict = dict(HISTORY_DEFAULTS)
         self.commands: dict = dict(COMMAND_DEFAULTS)
         self.taint: dict = dict(TAINT_DEFAULTS)
+        self.data: dict = dict(DATA_DEFAULTS)
         self.sequences: list[dict] = []
         self.source, self.fingerprint = "", verify.rules_fingerprint("")
         self.mode, self.shadow_agents = "enforce", []
@@ -789,13 +796,19 @@ class Policy:
                         raise ValueError(f"taint_checks.{k} must be block, review, warn or off")
                 for k in ("untrusted", "sinks"):
                     tc[k] = [tc[k]] if isinstance(tc[k], str) else list(tc[k] or [])
+                dc = {**DATA_DEFAULTS, **(data.get("data_checks") or {})}
+                for k in DATA_EFFECT_KEYS:
+                    dc[k] = "off" if dc[k] is False else DATA_DEFAULTS[k] if dc[k] is True else str(dc[k]).lower()
+                    if dc[k] not in ("block", "review", "warn", "off"):
+                        raise ValueError(f"data_checks.{k} must be block, review, warn or off")
+                dc["where"] = [dc["where"]] if isinstance(dc["where"], str) else list(dc["where"] or [])
                 mode = str(data.get("mode", "enforce")).lower()
                 if mode not in ("enforce", "shadow"):
                     raise ValueError("mode must be enforce or shadow")
                 shadow_agents = data.get("shadow_agents") or []
                 shadow_agents = [shadow_agents] if isinstance(shadow_agents, str) else list(shadow_agents)
                 self.default, self.rules, self.history, self.commands = default, rules, hc, cc
-                self.sequences, self.taint = sequences, tc
+                self.sequences, self.taint, self.data = sequences, tc, dc
                 self.source, self.fingerprint = source, verify.rules_fingerprint(source)
                 self.mode, self.shadow_agents = mode, shadow_agents
                 self.default_reason = data.get("default_reason") or f"default {default}"
@@ -1160,6 +1173,29 @@ def _globbed(name: str | None, globs: list[str]) -> bool:
     return any(fnmatch.fnmatchcase((name or "").lower(), g.lower()) for g in globs)
 
 
+def data_signals(ev: "EventIn") -> list[dict]:
+    """Text this action puts where others read it (a PR, an issue, a comment, a chat post): does it name a customer on
+    the team's list, or carry personal data? (see outbound.py)"""
+    dc = policy.data
+    if dc["customer_names"] == "off" and dc["personal_data"] == "off":
+        return []
+    shell = _globbed(ev.name, policy.commands["tools"])
+    line = commands.command_of(ev.input) if shell else None
+    if (shell and not line) or not outbound.is_shared_place(ev.name, line if shell else None, dc["where"]):
+        return []
+    text = line if shell else outbound.text_of(ev.input)
+    out: list[dict] = []
+    if dc["customer_names"] != "off" and (names := outbound.customers_named(text, settings().get("customers") or [])):
+        who = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        out.append({"check": "customer_names", "effect": dc["customer_names"],
+                    "message": f"This puts text where others can read it, and it names {who}, on your customer list. "
+                               "Check it should be there."})
+    if dc["personal_data"] != "off" and (found := outbound.personal_data(text, policy.history["company_domains"])):
+        out.append({"check": "personal_data", "effect": dc["personal_data"],
+                    "message": f"This puts text where others can read it, and it contains {', '.join(found)}."})
+    return out
+
+
 def taint_signals(conn, ev: "EventIn", client: str) -> list[dict]:
     """Does this action send something to a destination that only untrusted content mentioned? (see taint.py)"""
     tc = policy.taint
@@ -1242,11 +1278,12 @@ def record_event(ev: EventIn, client: str, client_ip: str | None) -> Decision:
                 signals += history_signals(conn, ev.name, ev.input, to_stored_json(ev.input), ev.source,
                                            ev.session_id, is_change=decision == "review" and not only_reads,
                                            client=client, only_reads=only_reads)
-                signals += taint_signals(conn, ev, client) + command_found
+                signals += data_signals(ev) + taint_signals(conn, ev, client) + command_found
             blocking = next((s for s in signals if s["effect"] == "block"), None)
             needs_person = next((s for s in signals if s["effect"] == "review"), None)
             signal_id = lambda s: f"sequence:{s['rule']}" if s["check"] == "sequence" else \
                 f"command:{s['check']}" if s["check"].endswith("_command") else \
+                f"data:{s['check']}" if s["check"] in DATA_EFFECT_KEYS else \
                 f"taint:{s['check']}" if s["check"] in TAINT_EFFECT_KEYS else f"history:{s['check']}"
             if blocking and ev.output is None and ev.error is None:
                 decision, reason, rule_id = "deny", blocking["message"], signal_id(blocking)
@@ -1330,7 +1367,8 @@ def settings() -> dict:
     defaults = {"public_url": PUBLIC_URL, "slack_webhook": APPROVAL_WEBHOOK_URL,
                 "ntfy_topic": os.getenv("NTFY_TOPIC", ""), "ntfy_server": os.getenv("NTFY_SERVER", "https://ntfy.sh"),
                 "notify_as": os.getenv("NOTIFY_APPROVER", "admin"), "weekly_digest": True,
-                "second_person": os.getenv("SECOND_PERSON_APPROVAL", "").lower() in ("1", "true", "yes")}
+                "second_person": os.getenv("SECOND_PERSON_APPROVAL", "").lower() in ("1", "true", "yes"),
+                "customers": []}
     return {**defaults, **state_get("settings", {})}
 
 
@@ -1900,6 +1938,7 @@ class SettingsIn(BaseModel):
     notify_as: str | None = Field(None, max_length=64)
     weekly_digest: bool | None = None
     second_person: bool | None = None
+    customers: list[str] | None = Field(None, max_length=5000)   # names to keep out of PRs, issues, posts (data_checks)
 
 
 @app.get("/v1/settings")
@@ -1918,6 +1957,11 @@ def put_settings(body: SettingsIn, who: str = Depends(admin)):
         raise HTTPException(400, "ntfy_topic: letters, digits, '-' and '_' only")
     if changes.get("notify_as") and not can_approve(changes["notify_as"]):
         raise HTTPException(400, f"'{changes['notify_as']}' can't approve, so links sent as them wouldn't work")
+    if "customers" in changes:
+        names = list(dict.fromkeys(n.strip() for n in changes["customers"] if n.strip()))
+        if any(len(n) > 200 for n in names):
+            raise HTTPException(400, "customers: one name per line, up to 200 characters each")
+        changes["customers"] = names
     with audited_tx() as conn:
         current = json.loads(conn.execute(select(gateway_state.c.value).where(gateway_state.c.key == "settings")).scalar() or "{}")
         current.update(changes)
