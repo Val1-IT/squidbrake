@@ -158,6 +158,9 @@ from a clone, use the `.venv` Python that `start.bat` / `start.sh` created):
 
 Wrapping a GitHub, Stripe or Slack MCP server? Start with the commented example policies in
 [`examples/rules/`](examples/rules/) and adjust their tool-name patterns to the server's tool list.
+Running an agent with nobody watching (a nightly loop, a cron job, a Routine)? Start from
+[`unattended-agent.yaml`](examples/rules/unattended-agent.yaml): a step cap, an allowlist, no redoing work,
+and no deletes or money movement, enforced from outside the agent instead of promised in its prompt.
 
 Things to ask the agent, then watch the dashboard:
 

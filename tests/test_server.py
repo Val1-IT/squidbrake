@@ -1209,3 +1209,36 @@ def test_lookalike_domains():
     assert server.lookalike_of("acme.com", ["acme.com"]) is None
     assert server.lookalike_of("mail.acme.com", ["acme.com"]) is None
     assert server.lookalike_of("example.com", ["acme.com"]) is None
+
+
+def test_unattended_agent_example_policy(c, monkeypatch, tmp_path):
+    shipped = (Path(__file__).resolve().parents[1] / "examples" / "rules" / "unattended-agent.yaml").read_text()
+    p = server.Policy(Path(__file__).resolve().parents[1] / "examples" / "rules" / "unattended-agent.yaml")
+    p._maybe_reload()
+    assert p.source and p.mode == "shadow" and {s["id"] for s in p.sequences} == {"runaway-loop", "runaway-sends"}
+    assert p.history["repeat_of_rejected"] == "block" and p.commands["irreversible"] == "block"
+
+    def decide(name, input=None):
+        return p.evaluate(kind="mcp", name=name, source=None, client="test", session_id=None, input=input or {})[0]
+
+    for name in ("github.list_issues", "stripe.list_payments", "linear.search_issues", "Read", "WebFetch"):
+        assert decide(name) == "allow", name
+    for name in ("github.delete_repo", "stripe.create_refund", "stripe.list_refunds", "s3.remove_object",
+                 "github.create_issue", "unknown.tool"):
+        assert decide(name) == "deny", name
+    assert decide("Write", {"file_path": "C:/loop/reports/2026-10-07.md"}) == "allow"
+    assert decide("Write", {"file_path": "/home/me/.bashrc"}) == "deny"
+    assert decide("slack.post_message", {"channel": "#agent-runs"}) == "allow"
+    assert decide("slack.post_message", {"channel": "#general"}) == "deny"
+
+    rules = tmp_path / "rules.yaml"                       # enforce, with a cap small enough to hit
+    rules.write_text(shipped.replace("mode: shadow", "mode: enforce").replace("more_than: 200", "more_than: 3"))
+    monkeypatch.setattr(server, "policy", server.Policy(rules))
+    s = f"unattended-{time.time_ns()}"
+    for i in range(3):
+        d = c.post("/v1/events", headers=H, json={"name": "github.list_issues", "input": {"page": i},
+                                                   "session_id": s, "source": "nightly-bot"}).json()
+        assert d["decision"] == "allow"
+    d = c.post("/v1/events", headers=H, json={"name": "github.list_issues", "input": {"page": 3},
+                                               "session_id": s, "source": "nightly-bot"}).json()
+    assert d["decision"] == "deny" and d["rule_id"] == "sequence:runaway-loop" and "step limit" in d["reason"]
