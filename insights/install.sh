@@ -228,6 +228,14 @@ main() {
   fi
 
   if [ -n "$KEPT" ]; then exit 0; fi
+  # Everything else in one go: runs in the background, every agent here connected and checked, the dashboard opened
+  # signed in (onboard.py). SQUIDBRAKE_SETUP=0 stops after installing. Questions go to the terminal (stdin is this
+  # script); with no terminal it asks nothing.
+  if [ "${SQUIDBRAKE_SETUP:-}" != 0 ]; then
+    if (exec </dev/tty) 2>/dev/null; then "$SB" setup </dev/tty; else "$SB" setup </dev/null; fi && exit 0
+    say ""
+    say "Setup stopped (see above). To do it step by step:"
+  fi
   case ":$PATH:" in *":$BIN:"*) run="squidbrake" ;; *) run="$BIN/squidbrake   (or open a new terminal and run: squidbrake)" ;; esac
   cat <<EOF
 

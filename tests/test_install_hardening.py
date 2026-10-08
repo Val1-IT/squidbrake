@@ -249,6 +249,13 @@ def test_rerunning_the_installer_right_after_a_release_gets_it():
         assert text.count("--no-cache-dir --") == 2 and "--refresh-package squidbrake" in text
 
 
+def test_install_ps1_sets_everything_up_after_installing():
+    assert '& $sb setup' in PS1 and '$env:SQUIDBRAKE_SETUP -ne "0"' in PS1
+    assert PS1.index("pilot join") < PS1.index("& $sb setup")              # the pilot first, so its counts start with it
+    page = (ROOT / "insights" / "start.html").read_text(encoding="utf-8")
+    assert "That one line does it all" in page and "squidbrake connect claude-code</div>" not in page
+
+
 def test_install_ps1_path_survives_no_user_path_and_keeps_variables():
     assert "DoNotExpandEnvironmentNames" in PS1 and "ExpandString" in PS1
     assert "[string]$envKey.GetValue" in PS1

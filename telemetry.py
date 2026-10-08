@@ -38,7 +38,7 @@ SHIPPED_KEY = "phc_muPqCNPamFR8iPaewdgVWqdcrGburJSXeySGHqXatZnU"   # PostHog > P
 POSTHOG_KEY = os.getenv("SQUIDBRAKE_POSTHOG_KEY", SHIPPED_KEY)
 POSTHOG_HOST = os.getenv("SQUIDBRAKE_POSTHOG_HOST", "https://us.i.posthog.com")
 QUIET = {"hook", "agent-hook", "shell-guard", "proxy", "telemetry", "register"}  # never ask, never send
-COMMANDS = {"start", "connect", "doctor", "lockdown", "evidence", "undo", "pilot", "add-key", "keys", "verify"}
+COMMANDS = {"start", "setup", "connect", "doctor", "lockdown", "evidence", "undo", "pilot", "add-key", "keys", "verify"}
 WHAT_IS_SENT = __doc__.split("What is sent, once each time you run a command:")[1].strip()
 # the gateway's counts go where `squidbrake connect all` sends them (connect.py), as the community "pilot"
 COMMUNITY_SERVER, COMMUNITY_CODE = "https://pilots.squidbrake.com", "community-opt-in-ins-a42929"

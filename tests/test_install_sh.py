@@ -201,3 +201,11 @@ def test_a_failed_install_is_sent_only_after_a_yes_without_the_home_folder(box):
     assert "https://pilots.example.com/v1/install-report?installer=sh&code=acme-abc123" in call
     sent = (box.tmp / "log.sent").read_text()
     assert "UnknownIssuer in ~/.cache/uv" in sent and "home dir" not in sent
+
+
+def test_after_installing_it_sets_everything_up(box):
+    code, out = box.run()
+    assert code == 0 and "squidbrake setup" in box.log()              # the fake records how it was run
+    open(box.tmp / "log", "w").close()
+    code, out = box.run(SQUIDBRAKE_SETUP="0")
+    assert code == 0 and "setup" not in box.log() and "Next:" in out

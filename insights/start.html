@@ -77,27 +77,20 @@ if (D.hosted && !D.missing) {
         <button role="tab" data-os="win">Windows (PowerShell)</button><button role="tab" data-os="mac">macOS / Linux</button>
         <button role="tab" data-os="manual">Manual</button></div>
       <div class="cmd" id="installCmd"></div>
-      <p class="note">It installs Squidbrake and asks whether you'd like to join the pilot (see "What we see" below).</p>
+      <p class="note">That one line does it all: it installs Squidbrake, asks whether you'd like to join the pilot (see
+        "What we see" below), keeps it running in the background, connects every AI agent on this computer (Claude Code,
+        Cursor, Codex, Gemini CLI, VS Code Copilot, Antigravity, and their MCP tools), checks each one, and opens your
+        dashboard, already signed in.</p>
     </section>
 
-    <section class="step"><h2><span class="n">2</span> Start it</h2>
-      <p>Open a <b>new</b> terminal window and run:</p>
-      <div class="cmd">squidbrake</div>
-      <p class="note">It prints two keys (save them: they're shown once) and opens your dashboard at
-        <code>http://localhost:8080/dashboard</code>. Paste the <b>admin</b> key there. It asks once whether to keep running in the background: say <b>yes</b>.
-        While Squidbrake is off, your agents' actions are blocked, so they never run unchecked.</p>
+    <section class="step"><h2><span class="n">2</span> Save your keys, restart your agents</h2>
+      <p>The window shows two keys once: save them somewhere safe (the <b>admin</b> key signs you in to the dashboard
+        on another browser). Then quit and reopen your agents so they pick Squidbrake up.</p>
+      <p class="note">If a line says <b>[X]</b>, do what it says, then run <code>squidbrake doctor</code> to check again.
+        Squidbrake keeps running at every login. While it's off, your agents' actions are blocked, so they never run unchecked.</p>
     </section>
 
-    <section class="step"><h2><span class="n">3</span> Connect your agent</h2>
-      <p><b>Claude Code</b>: in another terminal window:</p>
-      <div class="cmd">squidbrake connect claude-code</div>
-      <p class="note">Then restart Claude Code. Every tool call (commands, edits, web fetches) now goes through Squidbrake.</p>
-      <p><b>Cursor, Codex, Gemini CLI, VS Code Copilot, Antigravity</b>: <code>squidbrake connect agents</code> adds
-        Squidbrake to each one installed (their terminal commands and file actions), and <code>squidbrake connect guard</code>
-        puts their MCP tools (GitHub, Stripe, databases...) behind it too. <code>--remove</code> undoes either.</p>
-    </section>
-
-    <section class="step try"><h2><span class="n">4</span> Use it as usual, and try these</h2>
+    <section class="step try"><h2><span class="n">3</span> Use it as usual, and try these</h2>
       <ul>
         <li>Ask your agent to <b>fix a failing test</b>: reading runs on its own; each change waits in the dashboard for one click.</li>
         <li>Ask it to <b>print your .env file</b>: blocked, and the agent is told why.</li>

@@ -225,6 +225,13 @@ if ($env:SQUIDBRAKE_PILOT -and $env:SQUIDBRAKE_PILOT_SERVER) {
 }
 
 if ($kept -or $service) { return }
+# Everything else in one go: runs in the background, every agent here connected and checked, the dashboard opened
+# signed in (onboard.py). $env:SQUIDBRAKE_SETUP = "0" stops after installing.
+if ($env:SQUIDBRAKE_SETUP -ne "0") {
+    & $sb setup
+    if ($LASTEXITCODE -eq 0) { return }
+    Write-Host "`nSetup stopped (see above). To do it step by step:" -ForegroundColor Yellow
+}
 Write-Host "`nNext:" -ForegroundColor Cyan
 Write-Host "  1. Run:  squidbrake"
 Write-Host "     It prints your keys (save them) and opens the dashboard. It asks once whether to keep running in the"
