@@ -27,9 +27,10 @@ case "$1" in
       case $mod in
         venv) [ -n "${FAKE_NO_VENV:-}" ] && { mkdir -p "$1"; echo "ensurepip is not available" >&2; exit 1; }
               mkdir -p "$1/bin"; cp "$0" "$1/bin/python"; exit 0 ;;
-        pip) want=""; for a in "$@"; do [ "$a" = squidbrake ] && want=1; done
+        pip) want=""; for a in "$@"; do case "$a" in squidbrake|squidbrake==*) want=1 ;; esac; done
              [ -z "$want" ] && exit 0
              echo "pip $*" >> "$FAKE_LOG"
+             case "$*" in *squidbrake==*) [ -n "${FAKE_PIN_FAIL:-}" ] && { echo "No matching distribution" >&2; exit 1; } ;; esac
              [ -n "${FAKE_PIP_FAIL:-}" ] && { echo "ERROR: Could not find a version that satisfies squidbrake (proxy)" >&2; exit 1; }
              printf '#!/bin/sh\necho "$0 $*" >> "$FAKE_LOG"\necho "squidbrake %s"\n' "${FAKE_VERSION:-0.9.0}" > "$(dirname "$0")/squidbrake"
              chmod +x "$(dirname "$0")/squidbrake"; exit 0 ;;
@@ -79,7 +80,8 @@ def box(tmp_path):
 
     def run(shell=SH, stdin=subprocess.DEVNULL, **env):
         e = {"HOME": str(home), "PATH": os.pathsep.join(path), "SHELL": "/bin/bash", "FAKE_LOG": str(tmp_path / "log"),
-             "SQUIDBRAKE_PYTHONS": "python3", "TMPDIR": str(tmp_path), **env}
+             "SQUIDBRAKE_PYTHONS": "python3", "TMPDIR": str(tmp_path),
+             "SQUIDBRAKE_VERSION": "any", **env}
         if os.name == "nt":
             e["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
         p = subprocess.run([shell, SCRIPT.as_posix()], env=e, stdin=stdin, capture_output=True, text=True, timeout=60,
@@ -209,3 +211,22 @@ def test_after_installing_it_sets_everything_up(box):
     open(box.tmp / "log", "w").close()
     code, out = box.run(SQUIDBRAKE_SETUP="0")
     assert code == 0 and "setup" not in box.log() and "Next:" in out
+
+
+PYPI_CURL = r"""#!/bin/sh
+echo "curl $*" >> "$FAKE_LOG"
+case "$*" in *pypi.org/pypi/squidbrake/json*) printf '{"info":{"author":"x","version":"0.9.5","yanked":false}}' ;; esac
+"""
+
+
+def test_it_asks_pypi_for_the_newest_version_and_installs_that_one(box):
+    """PyPI's list of files lags a release by up to 10 minutes; asking for the version by name gets it."""
+    _exe(box.fake / "curl", PYPI_CURL)
+    code, out = box.run(SQUIDBRAKE_VERSION="")
+    assert code == 0, out
+    assert "squidbrake==0.9.5" in box.log()
+    open(box.tmp / "log", "w").close()
+    code, out = box.run(SQUIDBRAKE_VERSION="", FAKE_PIN_FAIL="1")          # not downloadable yet: what the list has
+    pips = [line for line in box.log().splitlines() if line.startswith("pip ")]
+    assert code == 0, out
+    assert pips[0].endswith("squidbrake==0.9.5") and pips[-1].endswith("--upgrade squidbrake")

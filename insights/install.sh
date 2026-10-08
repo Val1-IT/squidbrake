@@ -85,9 +85,10 @@ with_venv() {    # $1 = a Python 3.10+
   fi
   say "Downloading Squidbrake (about a minute)..."
   "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1 || true
-  # truststore: use this computer's certificates, so it also works behind company proxies that inspect HTTPS
-  if "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade squidbrake >"$LOG" 2>&1 \
-     || "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir --use-feature=truststore --upgrade squidbrake >"$LOG" 2>&1; then
+  # truststore: use this computer's certificates, so it also works behind company proxies that inspect HTTPS.
+  # The newest version by name first; if that one isn't downloadable yet, whatever PyPI's list has.
+  if pip_install --upgrade "$SPEC" || pip_install --use-feature=truststore --upgrade "$SPEC" \
+     || { [ "$SPEC" != squidbrake ] && pip_install --upgrade squidbrake; }; then
     ln -sf "$APP/bin/squidbrake" "$BIN/squidbrake"
     works "$BIN/squidbrake" && SB="$BIN/squidbrake"
   fi
@@ -118,8 +119,9 @@ with_uv() {
   say "Using uv at $UV"
   say "Downloading Squidbrake and its Python (about a minute)..."
   # UV_NATIVE_TLS: this computer's certificates, so company proxies that inspect HTTPS (Zscaler, ...) work too
-  if ! (cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME"; UV_NATIVE_TLS=1 UV_TOOL_BIN_DIR="$BIN" \
-        "$UV" tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 squidbrake) >"$LOG" 2>&1; then
+  if ! (cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME"; export UV_NATIVE_TLS=1 UV_TOOL_BIN_DIR="$BIN"
+        uvi() { "$UV" tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 "$1"; }
+        uvi "$SPEC" || { [ "$SPEC" != squidbrake ] && uvi squidbrake; }) >"$LOG" 2>&1; then
     if works "$BIN/squidbrake"; then
       show_log
       say ""
@@ -149,10 +151,26 @@ add_to_path() {
   grep -qsF "$BIN" "$rc" || printf '\n# Squidbrake\n%s\n' "$line" >> "$rc"     # one file, quoted: HOME may have spaces
 }
 
+pip_install() { "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir "$@" >"$LOG" 2>&1; }
+
+# What to install: the newest release by name, asked of PyPI directly. PyPI's list of files is cached for up to
+# 10 minutes after a release, and pip and uv then pick the one before. SQUIDBRAKE_VERSION=X.Y.Z pins one;
+# SQUIDBRAKE_VERSION=any skips asking (support / tests).
+latest_spec() {
+  v="${SQUIDBRAKE_VERSION:-}"
+  if [ -z "$v" ] && command -v curl >/dev/null 2>&1; then
+    v=$(curl -fsS -m 10 https://pypi.org/pypi/squidbrake/json 2>/dev/null | grep -o '"version": *"[^"]*"' | head -n 1 \
+        | sed 's/.*"\([^"]*\)"$/\1/')
+  fi
+  v=$(printf '%s' "$v" | tr -cd '0-9a-z.')
+  case "$v" in ""|any) printf 'squidbrake' ;; *) printf 'squidbrake==%s' "$v" ;; esac
+}
+
 main() {
   APP="${SQUIDBRAKE_APP_DIR:-$HOME/.squidbrake/app}"
   BIN="${SQUIDBRAKE_BIN_DIR:-$HOME/.local/bin}"
   SB=""; KEPT=""
+  SPEC=$(latest_spec)
   HAD_APP=""; [ -x "$APP/bin/squidbrake" ] && HAD_APP=1
 
   say ""

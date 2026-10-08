@@ -58,6 +58,13 @@ New-Item -ItemType Directory -Force -Path $bin | Out-Null
 $sb = $null; $kept = $false
 $vpy = Join-Path $app "Scripts\python.exe"
 $hadApp = Works (Join-Path $app "Scripts\squidbrake.exe")
+# What to install: the newest release by name, asked of PyPI directly. PyPI's list of files is cached for up to
+# 10 minutes after a release, and pip and uv then pick the one before. $env:SQUIDBRAKE_VERSION = "X.Y.Z" pins one;
+# "any" skips asking (support / tests).
+$ver = $env:SQUIDBRAKE_VERSION
+if (-not $ver) { try { $ver = (Invoke-RestMethod "https://pypi.org/pypi/squidbrake/json" -TimeoutSec 10).info.version } catch {} }
+$ver = ([string]$ver) -replace '[^0-9a-z.]', ''
+$spec = if ($ver -and $ver -ne "any") { "squidbrake==$ver" } else { "squidbrake" }
 # truststore / UV_NATIVE_TLS: use this computer's certificates, so it works behind company proxies that inspect HTTPS
 $env:UV_NATIVE_TLS = "1"
 
@@ -122,9 +129,14 @@ try {
         if ($py) {
             Write-Host "Downloading Squidbrake (about a minute)..."
             & $vpy -m pip install --quiet --disable-pip-version-check --upgrade pip *> $null
-            & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade squidbrake *> $log
+            # the newest version by name first (truststore: this computer's certificates, for company proxies that
+            # inspect HTTPS); if that one isn't downloadable yet, whatever PyPI's list has
+            & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade $spec *> $log
             if ($LASTEXITCODE -ne 0) {
-                & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --use-feature=truststore --upgrade squidbrake *> $log
+                & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --use-feature=truststore --upgrade $spec *> $log
+            }
+            if ($LASTEXITCODE -ne 0 -and $spec -ne "squidbrake") {
+                & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade squidbrake *> $log
             }
             $exe = Join-Path $app "Scripts\squidbrake.exe"
             if ($LASTEXITCODE -eq 0 -and (Works $exe)) { $sb = CopyLauncher $exe }
@@ -156,7 +168,12 @@ try {
         Write-Host "Downloading Squidbrake and its Python (about a minute)..."
         $env:UV_TOOL_BIN_DIR = $bin
         Push-Location $env:TEMP
-        try { & $uv tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 squidbrake *> $log } finally { Pop-Location }
+        try {
+            & $uv tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 $spec *> $log
+            if ($LASTEXITCODE -ne 0 -and $spec -ne "squidbrake") {
+                & $uv tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 squidbrake *> $log
+            }
+        } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) {
             ShowLog $log
             if (Works $old) {

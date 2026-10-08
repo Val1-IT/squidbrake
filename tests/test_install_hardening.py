@@ -246,7 +246,8 @@ def test_rerunning_the_installer_right_after_a_release_gets_it():
     """pip and uv keep PyPI's list of versions for minutes: "the fix is out, run it again" got the old version."""
     sh = (ROOT / "insights" / "install.sh").read_text(encoding="utf-8")
     for text in (PS1, sh):
-        assert text.count("--no-cache-dir --") == 2 and "--refresh-package squidbrake" in text
+        assert "--no-cache-dir" in text and "--refresh-package squidbrake" in text
+        assert "https://pypi.org/pypi/squidbrake/json" in text and "squidbrake==" in text   # the newest, by name
 
 
 def test_install_ps1_sets_everything_up_after_installing():
