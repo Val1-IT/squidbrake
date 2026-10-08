@@ -393,6 +393,29 @@ def _q(s: str) -> str:
     return f'"{s}"' if " " in s else s
 
 
+def _short_path(path: str) -> str:
+    """Windows' short (8.3) name for a path, which has no spaces: C:/Users/Rahul Kumar -> C:/Users/RAHULK~1."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
+        return buf.value if 0 < n < len(buf) else path
+    except (AttributeError, OSError):
+        return path
+
+
+def _word(path: str) -> str:
+    """A path as one word that cmd, PowerShell and bash all read the same way. Agents run hook commands through
+    different shells (Cursor on Windows: PowerShell, or bash when started from Git Bash): to PowerShell a quoted first
+    word is a string, not a program to run, and bash drops backslashes. So on Windows: forward slashes, and the short
+    name when the path has a space. Only if the drive has no short names does it stay quoted."""
+    if os.name == "nt":
+        if " " in path:
+            path = _short_path(path)
+        path = path.replace("\\", "/")
+    return _q(path)
+
+
 def _read_json(path: Path) -> dict:
     text = path.read_text(encoding="utf-8").strip() if path.exists() else ""
     return json.loads(text) if text else {}
@@ -492,7 +515,7 @@ def agents(args) -> None:
                 print(f"{name}: hook removed")
             continue
         key = key or args.key or new_key("agents", args.url)
-        cmd = " ".join([_q(PYTHON), _q(str(AGENT_HOOK)), name, "--url", args.url, "--key", key])
+        cmd = " ".join([_word(PYTHON), _word(str(AGENT_HOOK)), name, "--url", args.url, "--key", key])
         t["edit"](data, cmd)
         _write_json(t["file"], data)
         print(f"{name}: hook added ({t['covers']}). Restart {name} to apply.")
@@ -646,10 +669,21 @@ def _hook_commands(data) -> list[str]:
 
 
 def _run_hook(cmd: str, event: dict) -> tuple[bool, str]:
-    """Run the hook exactly as the agent would, with a harmless command. -> (allowed, what it said)"""
+    """Run the hook exactly as the agent would, with a harmless command. -> (allowed, what it said)
+    On Windows also through PowerShell, which is what Cursor runs hooks with: a line cmd runs can fail there."""
+    if os.name == "nt" and (ps := shutil.which("powershell") or shutil.which("pwsh")):
+        ok, said = _run_hook_in(cmd, event, True)
+        if not ok:
+            return ok, said
+        ok, said = _run_hook_in([ps, "-NoProfile", "-NonInteractive", "-Command", cmd], event, False)
+        return ok, (f"in PowerShell (how Cursor runs it): {said}" if not ok else said)
+    return _run_hook_in(cmd, event, True)
+
+
+def _run_hook_in(cmd, event: dict, shell: bool) -> tuple[bool, str]:
     env = {**os.environ, "SQUIDBRAKE_DOCTOR": "1"}
     try:
-        p = subprocess.run(cmd, shell=True, input=json.dumps({**event, "cwd": str(Path.home())}), capture_output=True,
+        p = subprocess.run(cmd, shell=shell, input=json.dumps({**event, "cwd": str(Path.home())}), capture_output=True,
                            text=True, timeout=45, env=env, cwd=str(Path.home()))
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e)
