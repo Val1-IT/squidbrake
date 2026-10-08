@@ -242,6 +242,13 @@ def test_install_ps1_upgrades_in_place_and_keeps_a_working_install():
     assert "you still have" in PS1 and "Upgrading Squidbrake in" in PS1
 
 
+def test_rerunning_the_installer_right_after_a_release_gets_it():
+    """pip and uv keep PyPI's list of versions for minutes: "the fix is out, run it again" got the old version."""
+    sh = (ROOT / "insights" / "install.sh").read_text(encoding="utf-8")
+    for text in (PS1, sh):
+        assert text.count("--no-cache-dir --") == 2 and "--refresh-package squidbrake" in text
+
+
 def test_install_ps1_path_survives_no_user_path_and_keeps_variables():
     assert "DoNotExpandEnvironmentNames" in PS1 and "ExpandString" in PS1
     assert "[string]$envKey.GetValue" in PS1

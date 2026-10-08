@@ -122,9 +122,9 @@ try {
         if ($py) {
             Write-Host "Downloading Squidbrake (about a minute)..."
             & $vpy -m pip install --quiet --disable-pip-version-check --upgrade pip *> $null
-            & $vpy -m pip install --quiet --disable-pip-version-check --upgrade squidbrake *> $log
+            & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade squidbrake *> $log
             if ($LASTEXITCODE -ne 0) {
-                & $vpy -m pip install --quiet --disable-pip-version-check --use-feature=truststore --upgrade squidbrake *> $log
+                & $vpy -m pip install --quiet --disable-pip-version-check --no-cache-dir --use-feature=truststore --upgrade squidbrake *> $log
             }
             $exe = Join-Path $app "Scripts\squidbrake.exe"
             if ($LASTEXITCODE -eq 0 -and (Works $exe)) { $sb = CopyLauncher $exe }
@@ -156,7 +156,7 @@ try {
         Write-Host "Downloading Squidbrake and its Python (about a minute)..."
         $env:UV_TOOL_BIN_DIR = $bin
         Push-Location $env:TEMP
-        try { & $uv tool install --quiet --force --python-preference managed --python 3.12 squidbrake *> $log } finally { Pop-Location }
+        try { & $uv tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 squidbrake *> $log } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) {
             ShowLog $log
             if (Works $old) {

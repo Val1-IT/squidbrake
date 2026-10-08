@@ -86,8 +86,8 @@ with_venv() {    # $1 = a Python 3.10+
   say "Downloading Squidbrake (about a minute)..."
   "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1 || true
   # truststore: use this computer's certificates, so it also works behind company proxies that inspect HTTPS
-  if "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade squidbrake >"$LOG" 2>&1 \
-     || "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --use-feature=truststore --upgrade squidbrake >"$LOG" 2>&1; then
+  if "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade squidbrake >"$LOG" 2>&1 \
+     || "$APP/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir --use-feature=truststore --upgrade squidbrake >"$LOG" 2>&1; then
     ln -sf "$APP/bin/squidbrake" "$BIN/squidbrake"
     works "$BIN/squidbrake" && SB="$BIN/squidbrake"
   fi
@@ -119,7 +119,7 @@ with_uv() {
   say "Downloading Squidbrake and its Python (about a minute)..."
   # UV_NATIVE_TLS: this computer's certificates, so company proxies that inspect HTTPS (Zscaler, ...) work too
   if ! (cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME"; UV_NATIVE_TLS=1 UV_TOOL_BIN_DIR="$BIN" \
-        "$UV" tool install --quiet --force --python-preference managed --python 3.12 squidbrake) >"$LOG" 2>&1; then
+        "$UV" tool install --quiet --force --refresh-package squidbrake --python-preference managed --python 3.12 squidbrake) >"$LOG" 2>&1; then
     if works "$BIN/squidbrake"; then
       show_log
       say ""
