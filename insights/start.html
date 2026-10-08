@@ -71,7 +71,8 @@ if (D.hosted && !D.missing) {
       are blocked. It runs on your machine. Setup takes about 3 minutes.</p>
 
     <section class="step"><h2><span class="n">1</span> Install</h2>
-      <p>Paste this into a terminal. It needs Python 3.10+.</p>
+      <p>Windows: open <b>PowerShell</b> (not Command Prompt). Mac: open <b>Terminal</b>. Paste this and press Enter.
+        You don't need Python: if there isn't a recent one, it brings its own.</p>
       <div class="tabs" role="tablist">
         <button role="tab" data-os="win">Windows (PowerShell)</button><button role="tab" data-os="mac">macOS / Linux</button>
         <button role="tab" data-os="manual">Manual</button></div>
@@ -83,7 +84,8 @@ if (D.hosted && !D.missing) {
       <p>Open a <b>new</b> terminal window and run:</p>
       <div class="cmd">squidbrake</div>
       <p class="note">It prints two keys (save them: they're shown once) and opens your dashboard at
-        <code>http://localhost:8080/dashboard</code>. Paste the <b>admin</b> key there. Keep this window open while you work.</p>
+        <code>http://localhost:8080/dashboard</code>. Paste the <b>admin</b> key there. It asks once whether to keep running in the background: say <b>yes</b>.
+        While Squidbrake is off, your agents' actions are blocked, so they never run unchecked.</p>
     </section>
 
     <section class="step"><h2><span class="n">3</span> Connect your agent</h2>
@@ -120,7 +122,8 @@ if (D.hosted && !D.missing) {
     </section>
 
     <p class="foot">Stuck? ${D.contact ? "Reach me: " + esc(D.contact) + "." : "Reply to the message this link came in."}
-      To undo everything: <code>squidbrake connect claude-code --remove</code>, then <code>pipx uninstall squidbrake</code>.
+      To undo everything: <code>squidbrake service stop</code> and <code>squidbrake connect all --remove</code>, then delete
+      the <code>.squidbrake</code> folder in your home folder and <code>squidbrake</code> in <code>.local/bin</code> there.
       Squidbrake is free and open source (Apache 2.0).</p>`;
 
   const cmds = { win, mac, manual };

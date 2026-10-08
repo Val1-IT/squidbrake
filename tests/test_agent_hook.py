@@ -48,7 +48,7 @@ def run(monkeypatch):
     monkeypatch.setattr(server, "policy", server.Policy(ROOT / "rules.yaml"))       # the shipped rules
     monkeypatch.setattr(agent_hook, "KEY", "k1")
     monkeypatch.setattr(agent_hook, "MAX_WAIT", 0.0)                               # held -> answer at once in tests
-    monkeypatch.setattr(agent_hook.httpx, "Client", lambda base_url, headers, timeout: TestClient(server.app, headers=headers))
+    monkeypatch.setattr(agent_hook.httpx, "Client", lambda base_url, headers, timeout, **kw: TestClient(server.app, headers=headers))
 
     def go(agent, event):
         monkeypatch.setattr(sys, "argv", ["agent_hook.py", agent])

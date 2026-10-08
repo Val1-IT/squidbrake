@@ -34,7 +34,19 @@ import sys
 from pathlib import Path
 
 
+def _safe_output() -> None:
+    """Printing a name the console's code page can't show (C:/Users/राहुल on Windows, where output to a pipe or a
+    log file is cp1252) would stop the command with UnicodeEncodeError: show it escaped instead."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream and (stream.encoding or "").lower().replace("-", "") not in ("utf8", "utf8sig"):
+                stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _safe_output()
     here = Path(__file__).resolve().parent
     # The gateway's modules sit next to this file in the package (in a checkout, one folder up)
     # and import each other by their plain names.

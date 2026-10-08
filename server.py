@@ -3066,14 +3066,52 @@ def _cli_init(_) -> int:
     return 0
 
 
+def port_in_use(host: str, port: int) -> str | None:
+    """Why the gateway can't listen on host:port (another app, or Squidbrake already running), or None if it can."""
+    import socket
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    s = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if os.name != "nt":   # like uvicorn: a socket closed a moment ago (TIME_WAIT) doesn't count. On Windows this
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)    # option would let two programs share a port
+        s.bind((host or "127.0.0.1", port))
+        return None
+    except OSError as e:
+        try:
+            r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2, trust_env=False)
+            if r.status_code == 200 and r.json().get("status") == "ok" and "rules" in r.json():
+                return "Squidbrake is already running there (in the background, or in another window)"
+        except Exception:
+            pass
+        return f"another program is using it ({e.strerror or e})"
+    finally:
+        s.close()
+
+
+def can_open_browser() -> bool:
+    """No browser on a server over SSH or a Linux box without a desktop (webbrowser would start a text browser
+    in this terminal instead)."""
+    if os.getenv("SSH_CONNECTION") or os.getenv("SSH_TTY"):
+        return False
+    if sys.platform.startswith("linux") and not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
+        return False
+    return True
+
+
 def _cli_run(args) -> int:
     import uvicorn
 
-    created = None if keystore.disabled else keystore.ensure_initialized()
     shown_host = "localhost" if args.host in ("0.0.0.0", "127.0.0.1", "::", "") else args.host
+    if taken := port_in_use(args.host, args.port):
+        # before the keys and the browser: the browser would open whatever app has the port, and the keys go there
+        print(f"Port {args.port} is already in use: {taken}.\n"
+              f"Stop that, or run Squidbrake on another port:  {CLI} --port {args.port + 10}\n"
+              f"(then connect your agents to it: {CLI} connect all --url http://127.0.0.1:{args.port + 10})", file=sys.stderr)
+        return 1
+    created = None if keystore.disabled else keystore.ensure_initialized()
     url = PUBLIC_URL or f"http://{shown_host}:{args.port}"
     print_banner(url, created)
-    if created and not IN_DOCKER and not args.no_browser:
+    if created and not IN_DOCKER and not args.no_browser and can_open_browser():
         threading.Timer(2.0, webbrowser.open, [f"{url}/dashboard"]).start()
     os.environ["SQUIDBRAKE_LISTEN_PORT"] = str(args.port)    # where the MCP proxies (mcp_hub.py) reach this gateway
     uvicorn.run("server:app", host=args.host, port=args.port, workers=args.workers,

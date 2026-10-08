@@ -169,7 +169,9 @@ def maybe(argv: list[str], version: str) -> None:
         return
     cfg = load()
     if "enabled" not in cfg:
-        if not _interactive() or "--yes" in argv or any(a in ("-h", "--help") for a in argv):
+        # not during `pilot join` either: the installer runs it, and two questions with opposite defaults (this one
+        # Yes, the pilot's No) would put a founder who presses Enter in the community pilot instead of theirs
+        if command == "pilot" or not _interactive() or "--yes" in argv or any(a in ("-h", "--help") for a in argv):
             return
         cfg = _ask_once(cfg, version)
     if cfg.get("enabled") and POSTHOG_KEY:
