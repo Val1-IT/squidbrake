@@ -1,0 +1,121 @@
+# Example policy for Postgres / Supabase MCP servers wrapped with
+# `connect.py wrap --app postgres` (tools show as postgres.<tool>).
+# Globs are `*.tool` so wrapping the Supabase server as --app supabase works too.
+#
+# Checked (tool names from current READMEs/source, not guesses):
+#   - @supabase/mcp-server-supabase 0.13.0 and github.com/supabase/mcp main
+#     @ 8a265089 (2026-10-06): list/get/search tools, execute_sql (input query),
+#     apply_migration, branching, projects, edge functions, logs, advisors, docs
+#   - @modelcontextprotocol/server-postgres 0.6.2 (archived
+#     modelcontextprotocol/servers-archived src/postgres; in-file version 0.1.0).
+#     Only tool is query; input field is sql
+#
+# SQL on execute_sql / query is deny, then review, then allow. Regexes are
+# case-insensitive (the matcher compiles with re.I) and search json.dumps of
+# the call input, so newlines are \n and quotes are \". This is not a SQL
+# parser: a leading comment, SHOW/TABLE, or anything we cannot prove is a
+# single SELECT/WITH/EXPLAIN falls through to default review.
+default: review
+default_reason: Postgres / Supabase changes require approval
+
+rules:
+  # ---- SQL: never
+  # DROP/TRUNCATE anywhere in the statement, including apply_migration. A
+  # comment that only mentions "drop" will also match; that is fail-closed.
+  - id: block-sql-drop-truncate
+    action: deny
+    reason: Dropping or truncating database objects is not allowed
+    match:
+      name: ["*.execute_sql", "*.query", "*.apply_migration"]
+      input_regex: '\b(drop|truncate)\b'
+
+  # ---- SQL: a person decides
+  # INSERT/UPDATE/DELETE and other writes or DDL. SELECT ... INTO, a
+  # data-modifying CTE, and SELECT 1; DELETE ... hit this before the allow rule.
+  # Keyword-in-identifier false positives (a table named lock) wait for a person.
+  - id: review-sql-writes
+    action: review
+    reason: This SQL writes or changes the schema
+    match:
+      name: ["*.execute_sql", "*.query"]
+      input_regex: '\b(insert|update|delete|merge|alter|create|grant|revoke|copy|call|do|into|replace|refresh|reindex|vacuum|lock|execute|prepare|import|load|listen|notify|checkpoint|discard|cluster)\b'
+
+  # ---- SQL: reads run
+  # Whole query (the JSON string) is one statement starting with SELECT, WITH
+  # or EXPLAIN. A semicolon in that string means another statement follows, so
+  # this rule does not match.
+  - id: allow-sql-select
+    action: allow
+    reason: Read-only SQL
+    match:
+      name: ["*.execute_sql", "*.query"]
+      input_regex: '"(query|sql)"\s*:\s*"(?:\\[nrt]|\s)*(SELECT|WITH|EXPLAIN)\b(?:[^;"]|\\.)*"'
+
+  # ---- never allowed (named tools)
+  # Current Supabase MCP has no delete_project; the glob is there so a later
+  # server that adds one stays blocked. Resetting a branch is the closest
+  # "reset the database" tool; there is no reset_database.
+  - id: block-destructive-postgres
+    action: deny
+    reason: Deleting or pausing a project or branch, or resetting a branch, is not allowed
+    match:
+      name: ["*.delete_project", "*.delete_branch", "*.pause_project", "*.reset_branch"]
+
+  # ---- changes: a person decides
+  - id: review-postgres-schema-and-functions
+    action: review
+    reason: Applying a migration or deploying a function changes production
+    match:
+      name: ["*.apply_migration", "*.deploy_edge_function"]
+
+  - id: review-postgres-create-and-branch
+    action: review
+    reason: Creating a project or branch, or merging or rebasing a branch, needs approval
+    match:
+      name: ["*.create_project", "*.create_branch", "*.merge_branch", "*.rebase_branch"]
+
+  - id: review-postgres-cost-and-restore
+    action: review
+    reason: Confirming spend or restoring a project needs approval
+    match:
+      name: ["*.confirm_cost", "*.restore_project"]
+
+  # Secrets and storage config are not in the issue list; both change live
+  # project settings, so they wait for a person rather than running or being blocked.
+  - id: review-postgres-secrets-and-storage
+    action: review
+    reason: Changing Edge Function secrets or storage config needs approval
+    match:
+      name: ["*.create_edge_function_secret", "*.update_storage_config"]
+
+  # ---- looking is fine
+  # No list_schemas tool: list_tables takes a schemas list. query_logs is
+  # read-only ClickHouse against logs (field sql), not Postgres execute_sql.
+  # get_publishable_keys returns anon/publishable keys, not service_role.
+  - id: allow-postgres-reads
+    action: allow
+    reason: Read-only Postgres / Supabase operation
+    match:
+      name:
+        - "*.list_tables"
+        - "*.list_extensions"
+        - "*.list_migrations"
+        - "*.list_projects"
+        - "*.list_organizations"
+        - "*.list_edge_functions"
+        - "*.list_branches"
+        - "*.list_storage_buckets"
+        - "*.list_notebooks"
+        - "*.get_project"
+        - "*.get_organization"
+        - "*.get_cost"
+        - "*.get_logs"
+        - "*.get_advisors"
+        - "*.get_project_url"
+        - "*.get_publishable_keys"
+        - "*.get_edge_function"
+        - "*.get_storage_config"
+        - "*.get_notebook"
+        - "*.query_logs"
+        - "*.search_docs"
+        - "*.generate_typescript_types"

@@ -158,7 +158,7 @@ from a clone, use the `.venv` Python that `start.bat` / `start.sh` created):
   (`data/shop.db`, created with sample customers / products / orders; set `DB_PATH` to use your own).
   Reads run immediately, `UPDATE`/`DELETE`/`INSERT`/`ALTER` wait for your approval, and `DROP`/`TRUNCATE` are blocked.
 
-Wrapping a GitHub, Stripe or Slack MCP server? Start with the commented example policies in
+Wrapping a GitHub, Stripe, Slack or Postgres / Supabase MCP server? Start with the commented example policies in
 [`examples/rules/`](examples/rules/) and adjust their tool-name patterns to the server's tool list.
 Running an agent with nobody watching (a nightly loop, a cron job, a Routine)? Start from
 [`unattended-agent.yaml`](examples/rules/unattended-agent.yaml): a step cap, an allowlist, no redoing work,
@@ -537,7 +537,7 @@ and [`insights/`](insights/).
 - **An optional risk model that can only escalate** ([#16](https://github.com/batrapulkit/squidbrake/issues/16)): a second
   opinion that can hold an action, never allow one.
 - **More agents connected in one command**: Cursor install ([#2](https://github.com/batrapulkit/squidbrake/issues/2)),
-  more rule packs like the [GitHub, Stripe and Slack ones](examples/rules/).
+  more rule packs like the [GitHub, Stripe, Slack and Postgres ones](examples/rules/).
 
 Tell us what you need most: 👍 or comment on the issues.
 
