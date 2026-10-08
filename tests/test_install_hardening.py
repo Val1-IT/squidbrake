@@ -260,3 +260,45 @@ def test_start_page_says_powershell_and_the_real_way_to_undo():
     page = (ROOT / "insights" / "start.html").read_text(encoding="utf-8")
     assert "pipx uninstall" not in page and "not Command Prompt" in page and "connect all --remove" in page
     assert "Keep this window open while you work" not in page
+
+
+# ---- installs that failed: sent only after a yes, with nothing private in them
+
+def test_a_failed_install_report_is_kept_without_keys_names_or_emails(insights):
+    import app as insights_app
+    insights_app._reports.clear()
+    code = insights.post("/v1/admin/pilots", headers=ADMIN, json={"company": "Broke Install Co"}).json()["code"]
+    log = ("Collecting squidbrake\nERROR: certificate verify failed for C:\\Users\\Rahul Kumar\\AppData\\x\n"
+           "token=abc123 key gw_agent_secret_1234 me@acme.com /home/rahul/.cache\n")
+    r = insights.post(f"/v1/install-report?installer=ps1&code={code}&os=Windows+10&step=Installing+with+uv+failed",
+                      content=log.encode(), headers={"Content-Type": "text/plain"})
+    assert r.status_code == 200
+    assert insights.get("/v1/admin/install-reports").status_code == 401
+    got = next(x for x in insights.get("/v1/admin/install-reports", headers=ADMIN).json() if x["code"] == code)
+    assert got["company"] == "Broke Install Co" and got["installer"] == "ps1" and "certificate verify failed" in got["log"]
+    for private in ("Rahul", "rahul", "abc123", "gw_agent_secret_1234", "me@acme.com"):
+        assert private not in got["log"], private
+    stranger = insights.post("/v1/install-report?code=made-up-code", content=b"boom").json()
+    assert stranger == {"ok": True}                                    # kept, but not tied to a pilot
+    assert insights.post("/v1/install-report", content=b"   ").status_code == 422
+    assert insights.post(f"/v1/admin/install-reports/{got['id']}", headers=ADMIN, json={"done": True}).json()["ok"]
+
+
+def test_failed_install_reports_are_limited_per_address(insights):
+    import app as insights_app
+    insights_app._reports.clear()
+    try:
+        for _ in range(5):
+            assert insights.post("/v1/install-report", content=b"x" * 50_000).status_code == 200   # capped, not refused
+        assert insights.post("/v1/install-report", content=b"again").status_code == 429
+    finally:
+        insights_app._reports.clear()
+    import app
+    with app.db() as c:
+        assert max(len(r[0]) for r in c.execute("SELECT log FROM install_reports")) <= 6000
+
+
+def test_install_ps1_asks_before_sending_a_failed_install():
+    assert "OfferReport $msg" in PS1 and "[y/N]" in PS1 and "IsInputRedirected" in PS1
+    assert "[regex]::Escape($env:USERPROFILE)" in PS1 and "-Tail 15" in PS1
+    assert PS1.index("function OfferReport") < PS1.index("try {")

@@ -15,7 +15,31 @@ set -u
 
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '  [OK] %s\n' "$*"; }
-fail() { printf '\n  [X] %s\n\n' "$*"; exit 1; }
+fail() { printf '\n  [X] %s\n\n' "$*"; offer_report "$*"; exit 1; }
+
+# Asks first ([y/N], Enter is no; never without a terminal), then sends only the lines shown above as "What it
+# said", with this computer's home folder written as ~, so the Squidbrake team can see why it failed and help.
+# SQUIDBRAKE_SEND_REPORT=yes|no answers it ahead (support / tests).
+offer_report() {
+  [ -n "${LOG:-}" ] && [ -s "$LOG" ] && command -v curl >/dev/null 2>&1 || return 0
+  answer="${SQUIDBRAKE_SEND_REPORT:-}"
+  if [ -z "$answer" ]; then
+    (exec </dev/tty) 2>/dev/null || return 0
+    printf 'Send the "What it said" lines above to the Squidbrake team, so they can help? Only those lines go,\n'
+    printf 'with your home folder shown as ~ (nothing else from this computer). [y/N] '
+    read -r answer </dev/tty || answer=""
+  fi
+  case "$answer" in y|Y|yes|Yes|YES) ;; *) return 0 ;; esac
+  tail -n 15 "$LOG" | awk -v h="$HOME" 'h != "" { while ((i = index($0, h)) > 0) $0 = substr($0, 1, i - 1) "~" substr($0, i + length(h)) } { print }' > "$LOG.send"
+  code=$(printf '%s' "${SQUIDBRAKE_PILOT:-}" | tr -cd 'a-z0-9-')
+  step=$(printf '%s' "$1" | cut -c1-80 | tr -cd 'A-Za-z0-9 .,-' | tr ' ' '+')
+  os=$(uname -sm 2>/dev/null | tr -cd 'A-Za-z0-9 ._-' | tr ' ' '+')
+  if curl -fsS -m 15 -X POST -H "Content-Type: text/plain; charset=utf-8" --data-binary @"$LOG.send" \
+       "${SQUIDBRAKE_PILOT_SERVER:-https://pilots.squidbrake.com}/v1/install-report?installer=sh&code=$code&os=$os&step=$step" >/dev/null 2>&1
+  then say "  Sent. Thank you: the Squidbrake team will see what went wrong."
+  else say "  Couldn't send it. Send a screenshot of this window to whoever sent you this link instead."; fi
+  rm -f "$LOG.send"
+}
 works() { [ -n "$1" ] && [ -x "$1" ] && "$1" --version >/dev/null 2>&1; }
 new_enough() { [ -n "$1" ] && "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; }
 # the last lines of what a step printed, when it failed (pip and uv say why: a proxy, no network, ...)

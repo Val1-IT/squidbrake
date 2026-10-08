@@ -8,7 +8,32 @@
 # a failed upgrade (offline, a proxy) leaves the working one as it was.
 $ErrorActionPreference = "Continue"
 Write-Host "`nInstalling Squidbrake (brakes for AI agents)...`n" -ForegroundColor Cyan
-function Fail($msg) { Write-Host "`n  [X] $msg`n" -ForegroundColor Red; throw "Squidbrake install stopped" }
+function Fail($msg) { Write-Host "`n  [X] $msg`n" -ForegroundColor Red; OfferReport $msg; throw "Squidbrake install stopped" }
+# Asks first ([y/N], Enter is no; never without a keyboard), then sends only the lines shown above as "What it
+# said", with this computer's user folder written as ~, so the Squidbrake team can see why it failed and help.
+# $env:SQUIDBRAKE_SEND_REPORT = yes|no answers it ahead (support / tests).
+function OfferReport($msg) {
+    if (-not (Test-Path $log) -or -not (Get-Item $log).Length) { return }
+    $answer = $env:SQUIDBRAKE_SEND_REPORT
+    if (-not $answer) {
+        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return }
+        Write-Host 'Send the "What it said" lines above to the Squidbrake team, so they can help? Only those lines go,'
+        $answer = Read-Host "with your user folder shown as ~ (nothing else from this computer). [y/N]"
+    }
+    if ($answer -notmatch '^(y|yes)$') { return }
+    $text = (Get-Content $log -Tail 15) -join "`n"
+    $text = $text -ireplace [regex]::Escape($env:USERPROFILE), "~"
+    $server = if ($env:SQUIDBRAKE_PILOT_SERVER) { $env:SQUIDBRAKE_PILOT_SERVER } else { "https://pilots.squidbrake.com" }
+    $pcode = ([string]$env:SQUIDBRAKE_PILOT) -replace '[^a-z0-9-]', ''
+    $q = "installer=ps1&code=$pcode" +
+         "&os=$([uri]::EscapeDataString("Windows $([Environment]::OSVersion.Version) $env:PROCESSOR_ARCHITECTURE PS$($PSVersionTable.PSVersion.Major)"))" +
+         "&step=$([uri]::EscapeDataString(([string]$msg).Substring(0, [Math]::Min(80, ([string]$msg).Length))))"
+    try {
+        Invoke-RestMethod -Method Post -Uri "$server/v1/install-report?$q" -Body ([Text.Encoding]::UTF8.GetBytes($text)) `
+            -ContentType "text/plain; charset=utf-8" -TimeoutSec 15 | Out-Null
+        Write-Host "  Sent. Thank you: the Squidbrake team will see what went wrong."
+    } catch { Write-Host "  Couldn't send it. Send a screenshot of this window to whoever sent you this link instead." }
+}
 function Works($exe) { if (-not $exe -or -not (Test-Path $exe)) { return $false }; & $exe --version *> $null; return ($LASTEXITCODE -eq 0) }
 # The last lines of what a step printed, when it failed (pip and uv say why: a proxy, no network, antivirus...)
 function ShowLog($log) {

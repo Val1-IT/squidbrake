@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -65,6 +65,8 @@ with db() as _c:
     CREATE INDEX IF NOT EXISTS catches_install ON catches (install_id);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS install_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+        code TEXT, os TEXT, step TEXT, installer TEXT, log TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS team_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
         name TEXT NOT NULL, email TEXT NOT NULL, company TEXT, team_size TEXT, agents TEXT, note TEXT, source TEXT,
         done INTEGER NOT NULL DEFAULT 0);
@@ -765,6 +767,61 @@ class DoneIn(BaseModel):
 def team_request_done(rid: int, d: DoneIn):
     with _lock, db() as c:
         if not c.execute("UPDATE team_requests SET done=? WHERE id=?", (int(d.done), rid)).rowcount:
+            raise HTTPException(404)
+    return {"ok": True}
+
+
+# ---- installs that failed: the installer asks first ([y/N]), shows what it sends, and sends the last lines of what
+# pip / uv / Python printed (home folder already replaced with ~ on the computer). Keys, tokens and email addresses
+# are taken out again here, in case a line had one.
+
+SCRUB = [(re.compile(r"gw_[A-Za-z0-9_-]{6,}"), "gw_..."),
+         (re.compile(r"(?i)(bearer|token|key|password|secret)([=: ]+)\S+"), r"\1\2..."),
+         (re.compile(r"[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,}"), "...@..."),
+         (re.compile(r"(?i)([a-z]:[\\/]users[\\/])[^\\/\r\n]+"), r"\1..."),       # Windows names can have spaces
+         (re.compile(r"(?i)(/users/|/home/)[^/\s]+"), r"\1...")]
+_reports: dict[str, list[float]] = {}
+
+
+def scrub(text: str) -> str:
+    for rx, to in SCRUB:
+        text = rx.sub(to, text)
+    return text
+
+
+@app.post("/v1/install-report")
+async def install_report(request: Request, code: str = "", os_name: str = Query("", alias="os"), step: str = "",
+                         installer: str = ""):
+    ip = _ip(request)
+    recent = [x for x in _reports.get(ip, []) if time.time() - x < 3600]
+    if len(recent) >= 5:
+        raise HTTPException(429, "too many reports from here: try again in an hour")
+    _reports[ip] = recent + [time.time()]
+    if len(_reports) > 10_000:
+        _reports.clear()
+    raw = (await request.body())[:16_000].decode("utf-8", errors="replace")
+    log = scrub("\n".join(raw.splitlines()[-40:]))[:6000]
+    if not log.strip():
+        raise HTTPException(422, "nothing to report")
+    with _lock, db() as c:
+        known = code and c.execute("SELECT 1 FROM pilots WHERE code=?", (code.lower(),)).fetchone()
+        c.execute("INSERT INTO install_reports (created_at, code, os, step, installer, log) VALUES (?, ?, ?, ?, ?, ?)",
+                  (now(), code.lower() if known else None, scrub(os_name)[:80], scrub(step)[:200],
+                   installer if installer in ("ps1", "sh") else "", log))
+    return {"ok": True}
+
+
+@app.get("/v1/admin/install-reports", dependencies=[Depends(admin)])
+def install_reports():
+    with db() as c:
+        return [dict(r) for r in c.execute("SELECT r.*, p.company FROM install_reports r LEFT JOIN pilots p ON p.code = r.code "
+                                           "ORDER BY r.id DESC LIMIT 100")]
+
+
+@app.post("/v1/admin/install-reports/{rid}", dependencies=[Depends(admin)])
+def install_report_done(rid: int, d: DoneIn):
+    with _lock, db() as c:
+        if not c.execute("UPDATE install_reports SET done=? WHERE id=?", (int(d.done), rid)).rowcount:
             raise HTTPException(404)
     return {"ok": True}
 

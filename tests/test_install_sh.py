@@ -35,13 +35,20 @@ exit 0
 
 FAKE_UV = r"""#!/bin/sh
 echo "uv $* NATIVE_TLS=${UV_NATIVE_TLS:-}" >> "$FAKE_LOG"
-[ -n "${FAKE_UV_FAIL:-}" ] && { echo "error: invalid peer certificate: UnknownIssuer" >&2; exit 1; }
+[ -n "${FAKE_UV_FAIL:-}" ] && { echo "error: invalid peer certificate: UnknownIssuer in $HOME/.cache/uv" >&2; exit 1; }
 printf '#!/bin/sh\necho "$0 $*" >> "$FAKE_LOG"\necho "squidbrake 0.9.0-uv"\n' > "$UV_TOOL_BIN_DIR/squidbrake"
 chmod +x "$UV_TOOL_BIN_DIR/squidbrake"
 """
 
 TOOLS = ("mkdir", "rm", "ln", "cp", "chmod", "tail", "sed", "grep", "mktemp", "dirname", "basename", "uname", "cat",
          "env", "sh", "printf")
+
+
+FAKE_CURL = r"""#!/bin/sh
+echo "curl $*" >> "$FAKE_LOG"
+for a in "$@"; do case "$a" in @*) cat "${a#@}" > "$FAKE_LOG.sent" ;; esac; done
+exit 0
+"""
 
 
 def _exe(path: Path, text: str) -> None:
@@ -87,10 +94,11 @@ def test_fresh_install_uses_the_python_here(box):
     assert code == 0, out
     assert "Installed: squidbrake 0.9.0" in out and (box.app / "bin" / "squidbrake").exists()
     assert "uv " not in box.log()
-    rc = (box.home / ".bashrc").read_text()
+    bashrc = ".bash_profile" if sys.platform == "darwin" else ".bashrc"      # bash on a Mac reads .bash_profile
+    rc = (box.home / bashrc).read_text()
     assert rc.count("home dir/.local/bin") == 1
     box.run()                                                            # run again: the PATH line isn't added twice
-    assert (box.home / ".bashrc").read_text().count("home dir/.local/bin") == 1
+    assert (box.home / bashrc).read_text().count("home dir/.local/bin") == 1
 
 
 def test_an_upgrade_that_cant_download_keeps_the_working_install(box):
@@ -172,3 +180,19 @@ def test_installers_are_executable_in_git():
                          capture_output=True, text=True).stdout
     if out:
         assert all(line.startswith("100755") for line in out.splitlines()), out
+
+
+def test_a_failed_install_is_sent_only_after_a_yes_without_the_home_folder(box):
+    box.add_uv()
+    _exe(box.fake / "curl", FAKE_CURL)
+    code, out = box.run(FAKE_PIP_FAIL="1", FAKE_UV_FAIL="1")             # no terminal to ask on: nothing is sent
+    assert code == 1 and "curl" not in box.log()
+    code, out = box.run(FAKE_PIP_FAIL="1", FAKE_UV_FAIL="1", SQUIDBRAKE_SEND_REPORT="no")
+    assert "curl" not in box.log()
+    code, out = box.run(FAKE_PIP_FAIL="1", FAKE_UV_FAIL="1", SQUIDBRAKE_SEND_REPORT="yes",
+                        SQUIDBRAKE_PILOT="acme-abc123", SQUIDBRAKE_PILOT_SERVER="https://pilots.example.com")
+    assert code == 1 and "Sent. Thank you" in out
+    call = next(line for line in box.log().splitlines() if line.startswith("curl "))
+    assert "https://pilots.example.com/v1/install-report?installer=sh&code=acme-abc123" in call
+    sent = (box.tmp / "log.sent").read_text()
+    assert "UnknownIssuer in ~/.cache/uv" in sent and "home dir" not in sent
