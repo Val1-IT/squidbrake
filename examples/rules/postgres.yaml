@@ -12,49 +12,65 @@
 #
 # SQL on execute_sql / query is deny, then review, then allow. Regexes are
 # case-insensitive (the matcher compiles with re.I) and search json.dumps of
-# the call input, so newlines are \n and quotes are \". This is not a SQL
-# parser: a leading comment, SHOW/TABLE, a semicolon inside a string literal,
-# or anything we cannot prove is a single SELECT/WITH/EXPLAIN falls through
-# to default review.
+# the call input, so newlines are \n and quotes are \". Unclassified SQL waits.
 default: review
 default_reason: Postgres / Supabase changes require approval
 
 rules:
   # ---- SQL: never
-  # DROP/TRUNCATE only as a statement's leading keyword (start of the SQL, or
-  # after ;), so SELECT ... 'drop off' is not denied. ALTER TABLE ... DROP
-  # COLUMN is not a leading DROP; it waits for a person via the ALTER review.
+  # Leading statement keyword after whitespace, escaped newlines, or a -- / /* */
+  # comment, including after `;`. SELECT ... 'drop off' is not a leading DROP.
   - id: block-sql-drop-truncate
     action: deny
     reason: Dropping or truncating database objects is not allowed
     match:
       name: ["*.execute_sql", "*.query", "*.apply_migration"]
-      input_regex: '"(query|sql)"\s*:\s*"(?:(?:\\[nrt]|\s)*(?:DROP|TRUNCATE)\b|(?:[^"\\]|\\.)*;(?:\\[nrt]|\s)*(?:DROP|TRUNCATE)\b)'
+      input_regex: '"(query|sql)"\s*:\s*"(?:(?:(?:\\[nrt]|\s|--(?:[^"\\]|\\[nrt]|\\.)*?(?:\\n)|/\*(?:[^"\\]|\\.)*?\*/)*)(?:DROP|TRUNCATE)\b|(?:[^"\\]|\\.)*;(?:(?:\\[nrt]|\s|--(?:[^"\\]|\\[nrt]|\\.)*?(?:\\n)|/\*(?:[^"\\]|\\.)*?\*/)*)(?:DROP|TRUNCATE)\b)'
+
+  # ALTER / GRANT / REVOKE / CREATE ROLE on ad-hoc SQL only. apply_migration is
+  # wait at minimum; a migration that ALTERs is the usual case, so it is not
+  # denied here and falls to the apply_migration review rule.
+  - id: block-sql-ddl
+    action: deny
+    reason: ALTER, GRANT/REVOKE, and CREATE ROLE are not allowed
+    match:
+      name: ["*.execute_sql", "*.query"]
+      input_regex: '"(query|sql)"\s*:\s*"(?:(?:(?:\\[nrt]|\s|--(?:[^"\\]|\\[nrt]|\\.)*?(?:\\n)|/\*(?:[^"\\]|\\.)*?\*/)*)(?:ALTER|GRANT|REVOKE|CREATE\s+(?:ROLE|USER|GROUP))\b|(?:[^"\\]|\\.)*;(?:(?:\\[nrt]|\s|--(?:[^"\\]|\\[nrt]|\\.)*?(?:\\n)|/\*(?:[^"\\]|\\.)*?\*/)*)(?:ALTER|GRANT|REVOKE|CREATE\s+(?:ROLE|USER|GROUP))\b)'
 
   # ---- SQL: a person decides
-  # INSERT/UPDATE/DELETE and other writes or DDL. SELECT ... INTO, a
-  # data-modifying CTE, and SELECT 1; DELETE ... hit this before the allow rule.
-  # Keyword-in-identifier false positives (a table named lock) wait for a person.
+  # INSERT/UPDATE/DELETE/MERGE, COPY, DO, SELECT ... INTO, write CTEs, CREATE
+  # (tables etc.; CREATE ROLE is already denied). Keyword-in-identifier false
+  # positives wait for a person.
   - id: review-sql-writes
     action: review
     reason: This SQL writes or changes the schema
     match:
       name: ["*.execute_sql", "*.query"]
-      input_regex: '\b(insert|update|delete|merge|alter|create|grant|revoke|copy|call|do|into|replace|refresh|reindex|vacuum|lock|execute|prepare|import|load|listen|notify|checkpoint|discard|cluster)\b'
+      input_regex: '\b(insert|update|delete|merge|create|copy|call|do|into|refresh|reindex|vacuum|lock|execute|prepare|import|load|listen|notify|checkpoint|discard|cluster)\b'
 
-  # Side-effect functions that a SELECT can still run. This is a denylist of
-  # well-known names, not exhaustive; anything not listed can still reach allow.
-  - id: review-sql-side-effects
+  - id: review-sql-explain-analyze
     action: review
-    reason: This SQL calls a function that can change session, sequence, or server state
+    reason: EXPLAIN ANALYZE can run the statement
     match:
       name: ["*.execute_sql", "*.query"]
-      input_regex: '\b(pg_terminate_backend|pg_cancel_backend|setval|nextval|set_config|lo_unlink|lo_import|lo_export|pg_drop_replication_slot|pg_reload_conf|dblink)'
+      input_regex: '\bEXPLAIN\b(?:[^;"\\]|\\.)*\bANALY[SZ]E\b'
+
+  # Fail-closed: any identifier( that is not a small allowlist of common
+  # read-only functions (count/sum/avg/..., now, coalesce, lower/upper, ...).
+  # AS/FROM/IN/OVER/... before ( are SQL syntax, not calls. Quoted names before
+  # ( always wait. This is not a parser; unknown or schema-qualified side
+  # effects wait, including pg_terminate_backend, setval, dblink.
+  - id: review-sql-functions
+    action: review
+    reason: This SQL calls a function that has not been proven read-only
+    match:
+      name: ["*.execute_sql", "*.query"]
+      input_regex: '(?:\\"[^"\\]*(?:\\.[^"\\]*)*\\"\s*\(|\b(?!(?:count|sum|avg|min|max|now|coalesce|nullif|greatest|least|lower|upper|length|char_length|btrim|trim|ltrim|rtrim|substr|substring|concat|concat_ws|left|right|date_trunc|date_part|extract|age|to_char|to_date|to_timestamp|abs|round|ceil|ceiling|floor|trunc|mod|cast|unnest|generate_series|row_number|rank|dense_rank|lag|lead|ntile|first_value|last_value|array_agg|string_agg|json_agg|jsonb_agg|bool_and|bool_or|current_date|current_time|current_timestamp|replace|position|strpos|split_part|format|overlay|to_json|to_jsonb|jsonb_typeof|pg_typeof|as|from|in|on|and|or|where|having|join|using|select|with|union|except|intersect|case|when|then|else|not|over|lateral|values|set|by|is|exists|between|like|ilike)\s*\()[a-z_][a-z0-9_]*\s*\()'
 
   # ---- SQL: reads run
-  # Whole JSON string is one statement starting with SELECT, WITH or EXPLAIN.
-  # [^;"\\] so a JSON-escaped quote (backslash + quote) cannot close the string
-  # early and hide a second statement after ;.
+  # One JSON string starting with SELECT, WITH or EXPLAIN, with no `;`.
+  # EXPLAIN ANALYZE is held above. [^;"\\] so a JSON-escaped quote cannot
+  # close the string early and hide a second statement.
   - id: allow-sql-select
     action: allow
     reason: Read-only SQL
