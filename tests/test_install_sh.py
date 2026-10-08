@@ -12,6 +12,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "insights" / "install.sh"
 SH = shutil.which("sh")
+if SH and os.name == "nt" and Path(SH).parent.name.lower() == "bin":
+    # Git's bin\sh.exe is a launcher that puts its own usr\bin first on PATH, before the test's fakes; usr\bin\sh.exe
+    # is the shell itself
+    if (direct := Path(SH).parents[1] / "usr" / "bin" / "sh.exe").exists():
+        SH = str(direct)
 pytestmark = pytest.mark.skipif(not SH, reason="needs a POSIX sh")
 
 FAKE_PYTHON = r"""#!/bin/sh
