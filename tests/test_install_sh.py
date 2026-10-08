@@ -41,7 +41,7 @@ chmod +x "$UV_TOOL_BIN_DIR/squidbrake"
 """
 
 TOOLS = ("mkdir", "rm", "ln", "cp", "chmod", "tail", "sed", "grep", "mktemp", "dirname", "basename", "uname", "cat",
-         "env", "sh", "printf")
+         "env", "sh", "printf", "tr", "cut", "awk", "head", "dash")
 
 
 FAKE_CURL = r"""#!/bin/sh
