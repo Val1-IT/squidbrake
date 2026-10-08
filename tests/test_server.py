@@ -754,6 +754,8 @@ def test_postgres_example_policy():
     assert decide("postgres.query", {"sql": "SELECT * FROM users"}) == "allow"
     assert decide("postgres.execute_sql", {"query": "WITH cte AS (SELECT 1) SELECT * FROM cte"}) == "allow"
     assert decide("postgres.execute_sql", {"query": "EXPLAIN SELECT 1"}) == "allow"
+    assert decide("postgres.execute_sql", {"query": 'SELECT "id" FROM t'}) == "allow"
+    assert decide("postgres.execute_sql", {"query": 'SELECT "foo\\bar" FROM t'}) == "allow"
 
     assert decide("postgres.execute_sql", {"query": "SELECT 1; DELETE FROM t"}) == "review"
     assert decide("postgres.execute_sql",
@@ -761,9 +763,17 @@ def test_postgres_example_policy():
     assert decide("postgres.execute_sql", {"query": "SELECT * INTO t FROM u"}) == "review"
     for q in ("INSERT INTO t VALUES (1)", "UPDATE t SET x = 1", "DELETE FROM t"):
         assert decide("postgres.execute_sql", {"query": q}) == "review", q
+    assert decide("postgres.execute_sql", {"query": 'SELECT "id" FROM t; SET ROLE postgres'}) == "review"
+    assert decide("postgres.execute_sql", {"query": "SELECT 'a;b' FROM t"}) == "review"
+    assert decide("postgres.execute_sql", {"query": "SELECT pg_terminate_backend(42)"}) == "review"
+    assert decide("postgres.execute_sql", {"query": "SELECT setval('seq', 1)"}) == "review"
+    assert decide("postgres.execute_sql", {"query": "SELECT dblink('db', 'SELECT 1')"}) == "review"
+    assert decide("postgres.execute_sql", {"query": "ALTER TABLE t DROP COLUMN x"}) == "review"
+    assert decide("postgres.execute_sql", {"query": "SELECT * FROM t WHERE note = 'drop off'"}) == "allow"
 
     assert decide("postgres.execute_sql", {"query": "DROP TABLE t"}) == "deny"
     assert decide("postgres.query", {"sql": "TRUNCATE t"}) == "deny"
+    assert decide("postgres.execute_sql", {"query": "SELECT 1; DROP TABLE t"}) == "deny"
     assert decide("postgres.apply_migration", {"name": "drop_t", "query": "DROP TABLE t"}) == "deny"
 
     assert decide("postgres.apply_migration", {"name": "add_col", "query": "ALTER TABLE t ADD COLUMN x int"}) == "review"
@@ -778,7 +788,6 @@ def test_postgres_example_policy():
 
 
 def test_slack_example_policy():
-
     rules = Path(__file__).resolve().parents[1] / "examples" / "rules" / "slack.yaml"
     p = server.Policy(rules)
 
